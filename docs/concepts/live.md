@@ -426,6 +426,15 @@ The system state is then reconciled with the reports, which represent external "
   - LIMIT orders are used when a price can be determined (cases 1-3), ensuring accurate PnL calculations
   - MARKET orders are only used as a last resort when starting fresh with no available pricing data
   - Zero quantity differences after precision rounding are handled gracefully.
+- **Partial Window Adjustment**:
+  - When `reconciliation_lookback_mins` is set, the reconciliation window may not capture the complete position history (missing opening fills).
+  - The system automatically adjusts fills to ensure accurate position reconstruction using lifecycle analysis:
+    - Detects zero-crossings (when position qty crosses through FLAT) to identify separate position lifecycles.
+    - Adds synthetic opening fills when the earliest lifecycle is incomplete.
+    - Filters out closed lifecycles when current lifecycle matches venue position.
+    - Replaces mismatched current lifecycle with synthetic fill reflecting venue position.
+  - Synthetic fills use calculated reconciliation prices to achieve target average positions.
+  - See [Partial window adjustment scenarios](#partial-window-adjustment-scenarios) for details.
 - **Exception Handling**:
   - Individual adapter failures do not abort the entire reconciliation process.
   - Missing order status reports are handled gracefully when fill reports arrive first.
@@ -473,3 +482,38 @@ The scenarios below are split between startup reconciliation (mass status) and r
 :::tip
 For persistent reconciliation issues, consider dropping cached state or flattening accounts before system restart.
 :::
+
+### Reconciliation invariants
+
+The reconciliation system maintains the following invariants to ensure position accuracy:
+
+1. **Position quantity accuracy**: The system ensures the final position quantity matches the venue exactly (within instrument precision).
+2. **Average entry price accuracy**: The system ensures the position's average entry price matches the venue's reported average price (within configured tolerance, default 0.01%).
+3. **PnL calculation integrity**: All generated fills (including synthetic fills) use calculated prices that preserve correct unrealized PnL based on venue position data.
+
+These invariants are maintained even when:
+
+- The reconciliation window doesn't capture complete fill history
+- Fills are missing from venue reports
+- Position lifecycles span beyond the lookback window
+- Multiple position flips (zero-crossings) have occurred
+
+### Partial window adjustment scenarios
+
+When the reconciliation window doesn't capture complete position history (limited `reconciliation_lookback_mins`), the system analyzes fill lifecycles and applies adjustments to ensure accurate position reconstruction while maintaining the reconciliation invariants.
+
+| Scenario | Description | System behavior |
+|----------|-------------|-----------------|
+| **Complete lifecycle** | All fills from position opening to current state are captured within the window. | No adjustment - fills returned unchanged. |
+| **Incomplete single lifecycle** | Window misses opening fills, but no zero-crossings detected (position accumulated in one direction). | Adds synthetic opening fill at the beginning with calculated price to achieve target average position. |
+| **Multiple lifecycles - current matches** | Zero-crossings detected, current lifecycle (after last zero-crossing) matches venue position. | Filters out old lifecycles - returns only fills from current lifecycle (after last zero-crossing). |
+| **Multiple lifecycles - current mismatch** | Zero-crossings detected, current lifecycle doesn't match venue position (window missed some current lifecycle fills). | Replaces entire current lifecycle with single synthetic fill reflecting venue position. |
+| **Flat position** | Venue reports FLAT position regardless of fill history. | No adjustment - fills returned unchanged. |
+| **No fills** | Reconciliation window contains no fill reports. | No adjustment - empty result. |
+
+**Key concepts:**
+
+- **Zero-crossing**: When position quantity crosses through zero (FLAT), marking the boundary between separate position lifecycles.
+- **Lifecycle**: A sequence of fills between zero-crossings representing a continuous position accumulation.
+- **Synthetic fill**: A calculated fill report created by the system to represent missing trading activity, using reconciliation price calculations to achieve correct average positions.
+- **Tolerance**: Position matching uses configurable price tolerance (default: 0.0001 = 0.01% relative difference) to account for minor calculation differences.

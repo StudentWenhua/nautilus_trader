@@ -208,7 +208,14 @@ impl ReconciliationManager {
     }
 
     /// Reconciles a single execution report during runtime.
-    pub fn reconcile_report(&mut self, report: ExecutionReport) -> Vec<OrderEventAny> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the average price cannot be converted to a valid `Decimal`.
+    pub fn reconcile_report(
+        &mut self,
+        report: ExecutionReport,
+    ) -> anyhow::Result<Vec<OrderEventAny>> {
         let mut events = Vec::new();
 
         // Remove from inflight checks if present
@@ -233,14 +240,14 @@ impl ReconciliationManager {
                 self.clock.borrow().timestamp_ns(),
                 Some(UUID4::new()),
             )
-            .with_avg_px(report.avg_px.unwrap_or(0.0));
+            .with_avg_px(report.avg_px.unwrap_or(0.0))?;
 
             if let Some(event) = self.reconcile_order_report(&mut order, &order_report) {
                 events.push(event);
             }
         }
 
-        events
+        Ok(events)
     }
 
     /// Checks inflight orders and returns events for any that need reconciliation.
@@ -600,7 +607,7 @@ mod tests {
         };
 
         // Reconcile should remove from inflight checks
-        manager.reconcile_report(report);
+        manager.reconcile_report(report).unwrap();
         assert_eq!(manager.inflight_checks.len(), 0);
     }
 

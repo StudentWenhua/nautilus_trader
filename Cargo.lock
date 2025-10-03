@@ -5051,6 +5051,8 @@ dependencies = [
  "nautilus-system",
  "pyo3",
  "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
  "serde",
  "serde_json",
  "tokio",

@@ -533,6 +533,18 @@ impl From<&Quantity> for QuantityRaw {
     }
 }
 
+impl From<Quantity> for Decimal {
+    fn from(value: Quantity) -> Self {
+        value.as_decimal()
+    }
+}
+
+impl From<&Quantity> for Decimal {
+    fn from(value: &Quantity) -> Self {
+        value.as_decimal()
+    }
+}
+
 impl FromStr for Quantity {
     type Err = String;
 

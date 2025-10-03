@@ -1425,11 +1425,84 @@ class LiveExecutionEngine(ExecutionEngine):
             color=LogColor.BLUE,
         )
 
+        # Adjust fills for instruments with incomplete first lifecycles
+        from nautilus_trader.live.reconciliation import adjust_fills_for_partial_window
+
+        # Start with original orders and fills
+        final_orders = dict(mass_status._order_reports)
+        final_fills = dict(mass_status._fill_reports)
+
+        for instrument_id in mass_status.position_reports.keys():
+            self._log.info(
+                f"Attempting to adjust fills for {instrument_id}",
+                LogColor.BLUE,
+            )
+            instrument = self._cache.instrument(instrument_id)
+            if instrument:
+                self._log.info(
+                    f"Calling adjust_fills_for_partial_window for {instrument_id}",
+                    LogColor.BLUE,
+                )
+                adjusted_orders_for_instrument, adjusted_fills_for_instrument = (
+                    adjust_fills_for_partial_window(
+                        mass_status,
+                        instrument,
+                        self._log,
+                    )
+                )
+
+                # Remove old orders and fills for this instrument
+                for venue_order_id in list(final_orders.keys()):
+                    order = final_orders[venue_order_id]
+                    if order.instrument_id == instrument_id:
+                        del final_orders[venue_order_id]
+
+                for venue_order_id in list(final_fills.keys()):
+                    fills = final_fills[venue_order_id]
+                    if fills and fills[0].instrument_id == instrument_id:
+                        del final_fills[venue_order_id]
+
+                # Add adjusted orders and fills for this instrument
+                final_orders.update(adjusted_orders_for_instrument)
+                final_fills.update(adjusted_fills_for_instrument)
+                self._log.info(
+                    f"Adjusted {len(adjusted_orders_for_instrument)} orders, {len(adjusted_fills_for_instrument)} fills for {instrument_id}",
+                    LogColor.BLUE,
+                )
+
+        # Apply all adjustments at once
+        mass_status._order_reports = final_orders
+        mass_status._fill_reports = final_fills
+        self._log.info(
+            f"Final order_reports contains {len(final_orders)} orders, fill_reports contains {len(final_fills)} fills across all instruments",
+            LogColor.BLUE,
+        )
+
         results: list[bool] = []
         reconciled_orders: set[ClientOrderId] = set()
         reconciled_trades: set[TradeId] = set()
 
         # Reconcile all reported orders
+        total_ethusdt_fills = 0
+        for venue_order_id, order_report in mass_status.order_reports.items():
+            trades = mass_status.fill_reports.get(venue_order_id, [])
+            if (
+                order_report.instrument_id == InstrumentId.from_str("ETHUSDT-LINEAR.BYBIT")
+                and trades
+            ):
+                total_ethusdt_fills += len(trades)
+                for trade in trades:
+                    self._log.info(
+                        f"Reconciling order {venue_order_id}: trade_id={trade.trade_id}, last_px={trade.last_px}",
+                        LogColor.CYAN,
+                    )
+
+        if total_ethusdt_fills > 0:
+            self._log.info(
+                f"Total ETHUSDT fills being reconciled: {total_ethusdt_fills}",
+                LogColor.CYAN,
+            )
+
         for venue_order_id, order_report in mass_status.order_reports.items():
             trades = mass_status.fill_reports.get(venue_order_id, [])
 
@@ -1460,6 +1533,7 @@ class LiveExecutionEngine(ExecutionEngine):
                 reconciled_trades.add(fill_report.trade_id)
 
             try:
+                # Apply all fills - let position cycle naturally through all lifecycles
                 result = self._reconcile_order_report(order_report, trades)
             except InvalidStateTrigger as e:
                 self._log.error(str(e))
@@ -1876,7 +1950,10 @@ class LiveExecutionEngine(ExecutionEngine):
         self._log.info(f"{report.signed_decimal_qty=}", LogColor.BLUE)
         self._log.info(f"{position_signed_decimal_qty=}", LogColor.BLUE)
 
-        if position_signed_decimal_qty != report.signed_decimal_qty:
+        # Check if quantities match
+        quantities_match = position_signed_decimal_qty == report.signed_decimal_qty
+
+        if not quantities_match:
             if not self.generate_missing_orders:
                 self._log.warning(
                     f"Discrepancy for {report.instrument_id} position "
@@ -2107,6 +2184,43 @@ class LiveExecutionEngine(ExecutionEngine):
                 )
 
             self._reconcile_order_report(diff_report, trades=[], is_external=False)
+        elif quantities_match and report.avg_px_open is not None:
+            # Quantities match, but verify avg_px_open also matches
+            current_avg_px = None
+            if positions_open:
+                # Calculate weighted average price of current positions
+                total_value = Decimal(0)
+                total_qty = Decimal(0)
+
+                for pos in positions_open:
+                    qty = abs(pos.signed_decimal_qty())
+
+                    if pos.avg_px_open and qty > 0:
+                        total_value += Decimal(str(pos.avg_px_open)) * qty
+                        total_qty += qty
+
+                if total_qty > 0:
+                    current_avg_px = total_value / total_qty
+
+            if current_avg_px is not None:
+                # Check if avg_px matches within tolerance
+                avg_px_diff = abs(current_avg_px - report.avg_px_open)
+                relative_diff = avg_px_diff / report.avg_px_open if report.avg_px_open != 0 else 0
+
+                if relative_diff > Decimal("0.0001"):  # 0.01% tolerance
+                    self._log.warning(
+                        f"Position avg_px mismatch for {report.instrument_id} after reconciliation: "
+                        f"internal={current_avg_px}, venue={report.avg_px_open}, "
+                        f"diff={avg_px_diff} ({relative_diff * 100:.4f}%). "
+                        f"This indicates incomplete reconciliation data from the venue.",
+                        LogColor.YELLOW,
+                    )
+                else:
+                    self._log.info(
+                        f"Position avg_px verified for {report.instrument_id}: "
+                        f"internal={current_avg_px}, venue={report.avg_px_open}",
+                        LogColor.GREEN,
+                    )
 
         return True  # Reconciled
 

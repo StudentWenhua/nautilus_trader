@@ -44,12 +44,18 @@ from nautilus_trader.model.enums import time_in_force_to_str
 from nautilus_trader.model.enums import trailing_offset_type_to_str
 from nautilus_trader.model.enums import trigger_type_to_str
 from nautilus_trader.model.functions import contingency_type_from_pyo3
+from nautilus_trader.model.functions import contingency_type_to_pyo3
 from nautilus_trader.model.functions import liquidity_side_from_pyo3
 from nautilus_trader.model.functions import order_side_from_pyo3
+from nautilus_trader.model.functions import order_side_to_pyo3
 from nautilus_trader.model.functions import order_status_from_pyo3
+from nautilus_trader.model.functions import order_status_to_pyo3
 from nautilus_trader.model.functions import order_type_from_pyo3
+from nautilus_trader.model.functions import order_type_to_pyo3
 from nautilus_trader.model.functions import position_side_from_pyo3
 from nautilus_trader.model.functions import time_in_force_from_pyo3
+from nautilus_trader.model.functions import time_in_force_to_pyo3
+from nautilus_trader.model.functions import trigger_type_to_pyo3
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -435,6 +441,71 @@ class OrderStatusReport(ExecutionReport):
             ts_triggered=values["ts_triggered"],
         )
 
+    def to_pyo3(self) -> nautilus_pyo3.OrderStatusReport:
+        return nautilus_pyo3.OrderStatusReport(
+            account_id=nautilus_pyo3.AccountId(self.account_id.value),
+            instrument_id=nautilus_pyo3.InstrumentId.from_str(self.instrument_id.value),
+            venue_order_id=nautilus_pyo3.VenueOrderId(self.venue_order_id.value),
+            order_side=order_side_to_pyo3(self.order_side),
+            order_type=order_type_to_pyo3(self.order_type),
+            time_in_force=time_in_force_to_pyo3(self.time_in_force),
+            order_status=order_status_to_pyo3(self.order_status),
+            quantity=nautilus_pyo3.Quantity.from_str(str(self.quantity)),
+            filled_qty=nautilus_pyo3.Quantity.from_str(str(self.filled_qty)),
+            ts_accepted=self.ts_accepted,
+            ts_last=self.ts_last,
+            ts_init=self.ts_init,
+            client_order_id=(
+                nautilus_pyo3.ClientOrderId(self.client_order_id.value)
+                if self.client_order_id
+                else None
+            ),
+            order_list_id=(
+                nautilus_pyo3.OrderListId(self.order_list_id.value) if self.order_list_id else None
+            ),
+            venue_position_id=(
+                nautilus_pyo3.PositionId(self.venue_position_id.value)
+                if self.venue_position_id
+                else None
+            ),
+            linked_order_ids=(
+                [nautilus_pyo3.ClientOrderId(oid.value) for oid in self.linked_order_ids]
+                if self.linked_order_ids
+                else None
+            ),
+            parent_order_id=(
+                nautilus_pyo3.ClientOrderId(self.parent_order_id.value)
+                if self.parent_order_id
+                else None
+            ),
+            contingency_type=contingency_type_to_pyo3(self.contingency_type),
+            expire_time=(
+                int(self.expire_time.timestamp() * 1_000_000_000) if self.expire_time else None
+            ),
+            price=nautilus_pyo3.Price.from_str(str(self.price)) if self.price else None,
+            trigger_price=(
+                nautilus_pyo3.Price.from_str(str(self.trigger_price))
+                if self.trigger_price
+                else None
+            ),
+            trigger_type=trigger_type_to_pyo3(self.trigger_type),
+            limit_offset=self.limit_offset,
+            trailing_offset=self.trailing_offset,
+            trailing_offset_type=getattr(
+                nautilus_pyo3.TrailingOffsetType,
+                self.trailing_offset_type.name,
+            ),
+            avg_px=self.avg_px,
+            display_qty=(
+                nautilus_pyo3.Quantity.from_str(str(self.display_qty)) if self.display_qty else None
+            ),
+            post_only=self.post_only,
+            reduce_only=self.reduce_only,
+            cancel_reason=self.cancel_reason,
+            ts_triggered=self.ts_triggered,
+            report_id=nautilus_pyo3.UUID4.from_str(self.id.value),
+        )
+
     @staticmethod
     def from_pyo3(pyo3_report: nautilus_pyo3.OrderStatusReport) -> OrderStatusReport:
         return OrderStatusReport(
@@ -676,6 +747,32 @@ class FillReport(ExecutionReport):
             ),
         )
 
+    def to_pyo3(self) -> nautilus_pyo3.FillReport:
+        return nautilus_pyo3.FillReport(
+            account_id=nautilus_pyo3.AccountId(self.account_id.value),
+            instrument_id=nautilus_pyo3.InstrumentId.from_str(self.instrument_id.value),
+            venue_order_id=nautilus_pyo3.VenueOrderId(self.venue_order_id.value),
+            trade_id=nautilus_pyo3.TradeId(self.trade_id.value),
+            order_side=order_side_to_pyo3(self.order_side),
+            last_qty=nautilus_pyo3.Quantity.from_str(str(self.last_qty)),
+            last_px=nautilus_pyo3.Price.from_str(str(self.last_px)),
+            commission=nautilus_pyo3.Money.from_str(str(self.commission)),
+            liquidity_side=getattr(nautilus_pyo3.LiquiditySide, self.liquidity_side.name),
+            ts_event=self.ts_event,
+            ts_init=self.ts_init,
+            client_order_id=(
+                nautilus_pyo3.ClientOrderId(self.client_order_id.value)
+                if self.client_order_id
+                else None
+            ),
+            venue_position_id=(
+                nautilus_pyo3.PositionId(self.venue_position_id.value)
+                if self.venue_position_id
+                else None
+            ),
+            report_id=nautilus_pyo3.UUID4.from_str(self.id.value),
+        )
+
     @staticmethod
     def from_pyo3(pyo3_report: nautilus_pyo3.FillReport) -> FillReport:
         return FillReport(
@@ -845,6 +942,23 @@ class PositionStatusReport(ExecutionReport):
                 PositionId(values["venue_position_id"]) if values["venue_position_id"] else None
             ),
             avg_px_open=(Decimal(values["avg_px_open"]) if values.get("avg_px_open") else None),
+        )
+
+    def to_pyo3(self) -> nautilus_pyo3.PositionStatusReport:
+        return nautilus_pyo3.PositionStatusReport(
+            account_id=nautilus_pyo3.AccountId(self.account_id.value),
+            instrument_id=nautilus_pyo3.InstrumentId.from_str(self.instrument_id.value),
+            position_side=getattr(nautilus_pyo3.PositionSide, self.position_side.name),
+            quantity=nautilus_pyo3.Quantity.from_str(str(self.quantity)),
+            ts_last=self.ts_last,
+            ts_init=self.ts_init,
+            report_id=nautilus_pyo3.UUID4.from_str(self.id.value),
+            venue_position_id=(
+                nautilus_pyo3.PositionId(self.venue_position_id.value)
+                if self.venue_position_id
+                else None
+            ),
+            avg_px_open=self.avg_px_open,
         )
 
     @staticmethod
@@ -1045,6 +1159,36 @@ class ExecutionMassStatus(Document):
                 for instrument_id, reports in self._position_reports.items()
             },
         }
+
+    def to_pyo3(self) -> nautilus_pyo3.ExecutionMassStatus:
+        pyo3_mass_status = nautilus_pyo3.ExecutionMassStatus(
+            client_id=nautilus_pyo3.ClientId(self.client_id.value),
+            account_id=nautilus_pyo3.AccountId(self.account_id.value),
+            venue=nautilus_pyo3.Venue(self.venue.value),
+            ts_init=self.ts_init,
+            report_id=nautilus_pyo3.UUID4.from_str(self.id.value),
+        )
+
+        # Add order reports
+        if self._order_reports:
+            pyo3_order_reports = [report.to_pyo3() for report in self._order_reports.values()]
+            pyo3_mass_status.add_order_reports(pyo3_order_reports)
+
+        # Add fill reports
+        if self._fill_reports:
+            all_fill_reports = []
+            for fills in self._fill_reports.values():
+                all_fill_reports.extend([fill.to_pyo3() for fill in fills])
+            pyo3_mass_status.add_fill_reports(all_fill_reports)
+
+        # Add position reports
+        if self._position_reports:
+            all_position_reports = []
+            for positions in self._position_reports.values():
+                all_position_reports.extend([pos.to_pyo3() for pos in positions])
+            pyo3_mass_status.add_position_reports(all_position_reports)
+
+        return pyo3_mass_status
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> ExecutionMassStatus:
