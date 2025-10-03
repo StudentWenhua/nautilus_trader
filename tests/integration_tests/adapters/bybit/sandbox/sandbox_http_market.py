@@ -13,6 +13,8 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+# mypy: ignore-errors
+
 import os
 
 import pytest
@@ -29,8 +31,8 @@ from nautilus_trader.adapters.bybit.endpoints.market.klines import BybitKlinesEn
 from nautilus_trader.adapters.bybit.endpoints.market.klines import BybitKlinesGetParams
 from nautilus_trader.adapters.bybit.endpoints.market.server_time import BybitServerTimeEndpoint
 from nautilus_trader.adapters.bybit.factories import get_bybit_http_client
-from nautilus_trader.adapters.bybit.http.client import BybitHttpClient
 from nautilus_trader.common.component import LiveClock
+from nautilus_trader.core import nautilus_pyo3
 from tests.integration_tests.adapters.bybit.utils.save_struct_to_file import save_struct_to_file
 
 
@@ -40,7 +42,7 @@ base_endpoint = "/v5/market/"
 
 
 @pytest.fixture(scope="module")
-def client() -> BybitHttpClient:
+def client() -> nautilus_pyo3.BybitHttpClient:
     clock = LiveClock()
 
     client = get_bybit_http_client(
@@ -51,14 +53,14 @@ def client() -> BybitHttpClient:
 
 
 @pytest.mark.asyncio()
-async def test_sandbox_get_server_time(client: BybitHttpClient) -> None:
+async def test_sandbox_get_server_time(client: nautilus_pyo3.BybitHttpClient) -> None:
     time_endpoint = BybitServerTimeEndpoint(client=client, base_endpoint=base_endpoint)
     server_time = await time_endpoint.get()
     save_struct_to_file(base_path + "server_time.json", server_time, force_create)
 
 
 @pytest.mark.asyncio()
-async def test_sandbox_get_instruments(client: BybitHttpClient) -> None:
+async def test_sandbox_get_instruments(client: nautilus_pyo3.BybitHttpClient) -> None:
     # --- Spot ---
     instruments_spot_endpoint = BybitInstrumentsInfoEndpoint(
         client,
@@ -107,7 +109,7 @@ async def test_sandbox_get_instruments(client: BybitHttpClient) -> None:
 
 
 @pytest.mark.asyncio()
-async def test_sandbox_get_klines(client: BybitHttpClient) -> None:
+async def test_sandbox_get_klines(client: nautilus_pyo3.BybitHttpClient) -> None:
     klines_endpoint = BybitKlinesEndpoint(client, base_endpoint)
     btc_spot_klines = await klines_endpoint.get(
         BybitKlinesGetParams(

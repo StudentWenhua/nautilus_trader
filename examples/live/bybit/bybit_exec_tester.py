@@ -68,8 +68,8 @@ instrument_id = InstrumentId.from_str(f"{symbol}.{BYBIT}")
 reconciliation_instrument_ids = [instrument_id]
 # reconciliation_instrument_ids = [instrument_id, instrument_id2]
 
-product_types: list[BybitProductType] = [product_type]
-# product_types: list[BybitProductType] = [product_type, BybitProductType.LINEAR]
+product_types: tuple[BybitProductType, ...] = (product_type,)
+# product_types: tuple[BybitProductType, ...] = (product_type, BybitProductType.LINEAR),
 
 # INVERSE
 # product_type = BybitProductType.INVERSE
@@ -123,7 +123,7 @@ config_node = TradingNodeConfig(
     #     use_trader_id=False,
     #     use_instance_id=False,
     #     stream_per_topic=False,
-    #     types_filter=[QuoteTick],
+    #     types_filter=[QuoteTick),
     #     autotrim_mins=30,
     #     heartbeat_interval_secs=1,
     # ),

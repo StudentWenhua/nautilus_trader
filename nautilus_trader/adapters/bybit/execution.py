@@ -17,12 +17,11 @@ from __future__ import annotations
 
 from asyncio import TaskGroup
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import msgspec
 
 from nautilus_trader.accounting.factory import AccountFactory
-from nautilus_trader.adapters.bybit.common.constants import BYBIT_VENUE
 from nautilus_trader.adapters.bybit.common.credentials import get_api_key
 from nautilus_trader.adapters.bybit.common.credentials import get_api_secret
 from nautilus_trader.adapters.bybit.common.enums import BybitEnumParser
@@ -35,6 +34,7 @@ from nautilus_trader.adapters.bybit.common.enums import BybitTpSlMode
 from nautilus_trader.adapters.bybit.common.enums import BybitTriggerDirection
 from nautilus_trader.adapters.bybit.common.fees import determine_fee_currency
 from nautilus_trader.adapters.bybit.common.symbol import BybitSymbol
+from nautilus_trader.adapters.bybit.constants import BYBIT_VENUE
 from nautilus_trader.adapters.bybit.endpoints.trade.batch_cancel_order import BybitBatchCancelOrder
 from nautilus_trader.adapters.bybit.endpoints.trade.batch_place_order import BybitBatchPlaceOrder
 from nautilus_trader.adapters.bybit.http.account import BybitAccountHttpAPI
@@ -688,7 +688,7 @@ class BybitExecutionClient(LiveExecutionClient):
 
     def _build_spot_position_report_from_wallet_balance(
         self,
-        instrument,
+        instrument: Any,
         wallet_balance: Decimal,
         ts_event: int,
     ) -> PositionStatusReport:

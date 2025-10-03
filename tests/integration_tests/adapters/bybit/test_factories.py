@@ -17,7 +17,6 @@ import asyncio
 
 import pytest
 
-from nautilus_trader.adapters.bybit.common.enums import BybitProductType
 from nautilus_trader.adapters.bybit.common.urls import get_http_base_url
 from nautilus_trader.adapters.bybit.common.urls import get_ws_base_url_public
 from nautilus_trader.adapters.bybit.config import BybitDataClientConfig
@@ -29,6 +28,7 @@ from nautilus_trader.adapters.bybit.factories import BybitLiveExecClientFactory
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.core.nautilus_pyo3 import BybitProductType
 from nautilus_trader.test_kit.mocks.cache_database import MockCacheDatabase
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
 

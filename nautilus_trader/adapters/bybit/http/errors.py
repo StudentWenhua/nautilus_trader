@@ -13,7 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from nautilus_trader.adapters.bybit.common.constants import BYBIT_RETRY_ERRORS_UTA
+from nautilus_trader.adapters.bybit.constants import BYBIT_RETRY_ERRORS_UTA
 
 
 class BybitError(Exception):

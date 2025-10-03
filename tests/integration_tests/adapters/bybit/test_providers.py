@@ -17,11 +17,10 @@ import pkgutil
 
 import pytest
 
-from nautilus_trader.adapters.bybit.common.enums import BybitProductType
-from nautilus_trader.adapters.bybit.http.client import BybitHttpClient
 from nautilus_trader.adapters.bybit.providers import BybitInstrumentProvider
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.config import InstrumentProviderConfig
+from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.nautilus_pyo3 import HttpClient
 from nautilus_trader.core.nautilus_pyo3 import HttpResponse
 
@@ -29,27 +28,25 @@ from nautilus_trader.core.nautilus_pyo3 import HttpResponse
 class TestBybitInstrumentProvider:
     def setup(self) -> None:
         self.clock = LiveClock()
-        self.http_client: BybitHttpClient = BybitHttpClient(
-            clock=self.clock,
+        self.http_client = nautilus_pyo3.BybitHttpClient(
             api_key="BYBIT_API_KEY",
             api_secret="BYBIT_API_SECRET",
             base_url="https://api-testnet.bybit.com",
         )
         self.provider = self.get_target_instrument_provider(
-            [
-                BybitProductType.SPOT,
-                BybitProductType.LINEAR,
-                BybitProductType.OPTION,
-            ],
+            (
+                nautilus_pyo3.BybitProductType.SPOT,
+                nautilus_pyo3.BybitProductType.LINEAR,
+                nautilus_pyo3.BybitProductType.OPTION,
+            ),
         )
 
     def get_target_instrument_provider(
         self,
-        product_types: list[BybitProductType],
+        product_types: tuple[nautilus_pyo3.BybitProductType, ...],
     ) -> BybitInstrumentProvider:
         return BybitInstrumentProvider(
             client=self.http_client,
-            clock=self.clock,
             product_types=product_types,
             config=InstrumentProviderConfig(load_all=True),
         )
@@ -112,7 +109,9 @@ class TestBybitInstrumentProvider:
 
     @pytest.mark.asyncio()
     async def test_linear_load_all_async(self, monkeypatch):
-        instrument_provider = self.get_target_instrument_provider([BybitProductType.LINEAR])
+        instrument_provider = self.get_target_instrument_provider(
+            (nautilus_pyo3.BybitProductType.LINEAR,),
+        )
         instrument_response = pkgutil.get_data(
             "tests.integration_tests.adapters.bybit.resources.http_responses.linear",
             "instruments.json",

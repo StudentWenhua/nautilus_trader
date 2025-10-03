@@ -15,7 +15,7 @@
 
 from typing import Final
 
-from nautilus_trader.adapters.bybit.common.enums import BybitProductType
+from nautilus_trader.core.nautilus_pyo3 import BybitProductType
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import Venue
 
@@ -24,12 +24,12 @@ BYBIT: Final[str] = "BYBIT"
 BYBIT_VENUE: Final[Venue] = Venue(BYBIT)
 BYBIT_CLIENT_ID: Final[ClientId] = ClientId(BYBIT)
 
-BYBIT_ALL_PRODUCTS: Final[list[BybitProductType]] = [
+BYBIT_ALL_PRODUCTS: Final[tuple[BybitProductType, ...]] = (
     BybitProductType.SPOT,
     BybitProductType.LINEAR,
     BybitProductType.INVERSE,
     BybitProductType.OPTION,
-]
+)
 
 # Set of Bybit error codes for which Nautilus will attempt retries,
 # potentially temporary conditions where a retry might make sense.

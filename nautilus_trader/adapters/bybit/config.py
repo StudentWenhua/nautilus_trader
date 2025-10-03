@@ -21,12 +21,12 @@ from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.config import PositiveFloat
 from nautilus_trader.config import PositiveInt
+from nautilus_trader.core.nautilus_pyo3 import BybitProductType
 
 
 if TYPE_CHECKING:
     from nautilus_trader.adapters.bybit.common.enums import BybitMarginMode
     from nautilus_trader.adapters.bybit.common.enums import BybitPositionMode
-    from nautilus_trader.adapters.bybit.common.enums import BybitProductType
     from nautilus_trader.adapters.bybit.common.symbol import BybitSymbol
 
 
@@ -44,8 +44,8 @@ class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
         The Bybit API public key.
         If ``None`` then will source the `BYBIT_API_SECRET` or
         `BYBIT_TESTNET_API_SECRET` environment variables.
-    product_types : list[BybitProductType], optional
-        The Bybit product type for the client.
+    product_types : tuple[BybitProductType, ...], optional
+        The Bybit product types for the client.
         If not specified then will use all products.
     demo : bool, default False
         If the client is connecting to the Bybit demo API.
@@ -63,7 +63,7 @@ class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
 
     api_key: str | None = None
     api_secret: str | None = None
-    product_types: list[BybitProductType] | None = None
+    product_types: tuple[BybitProductType, ...] | None = None
     base_url_http: str | None = None
     demo: bool = False
     testnet: bool = False
@@ -86,8 +86,8 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
         The Bybit API public key.
         If ``None`` then will source the `BYBIT_API_KEY` or
         `BYBIT_TESTNET_API_KEY` environment variables.
-    product_types : list[BybitProductType], optional
-        The Bybit product type for the client.
+    product_types : tuple[BybitProductType, ...], optional
+        The Bybit product types for the client.
         If None then will default to 'SPOT', you also cannot mix 'SPOT' with
         any other product type for execution, and it will use a `CASH` account
         type, vs `MARGIN` for the other derivative products.
@@ -145,7 +145,7 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
 
     api_key: str | None = None
     api_secret: str | None = None
-    product_types: list[BybitProductType] | None = None
+    product_types: tuple[BybitProductType, ...] | None = None
     base_url_http: str | None = None
     base_url_ws_private: str | None = None
     base_url_ws_trade: str | None = None

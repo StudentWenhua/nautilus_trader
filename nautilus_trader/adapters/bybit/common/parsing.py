@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from nautilus_trader.adapters.bybit.common.constants import BYBIT_HOUR_INTERVALS
-from nautilus_trader.adapters.bybit.common.constants import BYBIT_MINUTE_INTERVALS
+from nautilus_trader.adapters.bybit.constants import BYBIT_HOUR_INTERVALS
+from nautilus_trader.adapters.bybit.constants import BYBIT_MINUTE_INTERVALS
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import BookOrder
 from nautilus_trader.model.data import OrderBookDelta
