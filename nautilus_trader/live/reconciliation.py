@@ -464,7 +464,7 @@ def calculate_reconciliation_price(
 
     This is a pure function that calculates what price a fill would need to have
     to move from the current position state to the target position state with the
-    correct average price.
+    correct average price, accounting for the netting simulation logic.
 
     Parameters
     ----------
@@ -485,8 +485,10 @@ def calculate_reconciliation_price(
 
     Notes
     -----
-    The function calculates the reconciliation price using the formula:
-    (target_qty * target_avg_px) = (current_qty * current_avg_px) + (qty_diff * reconciliation_px)
+    The function handles three scenarios:
+    1. Flat to position: reconciliation_px = target_avg_px
+    2. Position flip (sign change): reconciliation_px = target_avg_px (due to value reset in simulation)
+    3. Accumulation/reduction: weighted average formula
 
     """
     result = nautilus_pyo3.calculate_reconciliation_price(

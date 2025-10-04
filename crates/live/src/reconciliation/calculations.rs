@@ -149,6 +149,7 @@ pub fn simulate_position(fills: &[FillSnapshot]) -> (Decimal, Decimal) {
 /// Detect zero-crossing timestamps in a sequence of fills.
 ///
 /// A zero-crossing occurs when position quantity crosses through zero (FLAT).
+/// This includes both landing exactly on zero and flipping from long to short or vice versa.
 ///
 /// # Parameters
 ///
@@ -166,9 +167,15 @@ pub fn detect_zero_crossings(fills: &[FillSnapshot]) -> Vec<u64> {
         let prev_qty = running_qty;
         running_qty += Decimal::from(fill.direction()) * fill.qty;
 
-        // Detect zero-crossing
-        if prev_qty != Decimal::ZERO && running_qty == Decimal::ZERO {
-            zero_crossings.push(fill.ts_event);
+        // Detect when position crosses zero
+        if prev_qty != Decimal::ZERO {
+            if running_qty == Decimal::ZERO {
+                // Landed exactly on zero
+                zero_crossings.push(fill.ts_event);
+            } else if (prev_qty > Decimal::ZERO) != (running_qty > Decimal::ZERO) {
+                // Sign changed - crossed through zero (flip)
+                zero_crossings.push(fill.ts_event);
+            }
         }
     }
 
@@ -220,7 +227,7 @@ pub fn check_position_match(
 ///
 /// This is a pure function that calculates what price a fill would need to have
 /// to move from the current position state to the target position state with the
-/// correct average price.
+/// correct average price, accounting for the netting simulation logic.
 ///
 /// # Parameters
 ///
@@ -235,8 +242,10 @@ pub fn check_position_match(
 ///
 /// # Notes
 ///
-/// The function calculates the reconciliation price using the formula:
-/// `(target_qty * target_avg_px) = (current_qty * current_avg_px) + (qty_diff * reconciliation_px)`
+/// The function handles three scenarios:
+/// 1. Flat to position: reconciliation_px = target_avg_px
+/// 2. Position flip (sign change): reconciliation_px = target_avg_px (due to value reset in simulation)
+/// 3. Accumulation/reduction: weighted average formula
 pub fn calculate_reconciliation_price(
     current_position_qty: Decimal,
     current_position_avg_px: Option<Decimal>,
@@ -263,9 +272,17 @@ pub fn calculate_reconciliation_price(
 
     let current_avg_px = current_position_avg_px?;
 
-    // Calculate the price needed to achieve target average
+    // Check if this is a flip scenario (sign change)
+    // In simulation, flips reset value to remaining * px, so reconciliation_px = target_avg_px
+    let is_flip = (current_position_qty > Decimal::ZERO) != (target_position_qty > Decimal::ZERO)
+        && target_position_qty != Decimal::ZERO;
+
+    if is_flip {
+        return Some(target_avg_px);
+    }
+
+    // For accumulation or reduction (same side), use weighted average formula
     // Formula: (target_qty * target_avg_px) = (current_qty * current_avg_px) + (qty_diff * reconciliation_px)
-    // Solving for reconciliation_px:
     let target_value = target_position_qty * target_avg_px;
     let current_value = current_position_qty * current_avg_px;
     let diff_value = target_value - current_value;
@@ -329,12 +346,27 @@ pub fn adjust_fills_for_partial_window(
 
     // Case 1: Has zero-crossings - focus on current lifecycle after last zero-crossing
     if !zero_crossings.is_empty() {
-        let last_zero_crossing_ts = *zero_crossings.last().unwrap();
+        // Find the last zero-crossing that lands on FLAT (qty==0)
+        // This separates lifecycles; flips within a lifecycle don't count
+        let mut last_flat_crossing_ts = None;
+        let mut running_qty = Decimal::ZERO;
 
-        // Get fills from current lifecycle (after last zero-crossing)
+        for fill in fills {
+            let prev_qty = running_qty;
+            running_qty += Decimal::from(fill.direction()) * fill.qty;
+
+            if prev_qty != Decimal::ZERO && running_qty == Decimal::ZERO {
+                last_flat_crossing_ts = Some(fill.ts_event);
+            }
+        }
+
+        let lifecycle_boundary_ts =
+            last_flat_crossing_ts.unwrap_or(*zero_crossings.last().unwrap());
+
+        // Get fills from current lifecycle (after lifecycle boundary)
         let current_lifecycle_fills: Vec<FillSnapshot> = fills
             .iter()
-            .filter(|f| f.ts_event > last_zero_crossing_ts)
+            .filter(|f| f.ts_event > lifecycle_boundary_ts)
             .cloned()
             .collect();
 
@@ -355,7 +387,7 @@ pub fn adjust_fills_for_partial_window(
         ) {
             // Current lifecycle matches - filter out old lifecycles
             return FillAdjustmentResult::FilterToCurrentLifecycle {
-                last_zero_crossing_ts,
+                last_zero_crossing_ts: lifecycle_boundary_ts,
                 current_lifecycle_fills,
             };
         }
@@ -363,7 +395,7 @@ pub fn adjust_fills_for_partial_window(
         // Current lifecycle doesn't match - replace with synthetic fill
         if let Some(first_fill) = current_lifecycle_fills.first() {
             let synthetic_fill = FillSnapshot::new(
-                first_fill.ts_event - 1, // Timestamp before first fill
+                first_fill.ts_event.saturating_sub(1), // Timestamp before first fill
                 venue_position.side,
                 venue_position.qty,
                 venue_position.avg_px,
@@ -448,7 +480,7 @@ pub fn adjust_fills_for_partial_window(
                     };
 
                     let synthetic_fill = FillSnapshot::new(
-                        first_fill.ts_event - 1,
+                        first_fill.ts_event.saturating_sub(1),
                         synthetic_side,
                         opening_qty.abs(),
                         opening_px,
@@ -487,7 +519,7 @@ pub fn adjust_fills_for_partial_window(
             && let Some(first_current_fill) = current_lifecycle_fills.first()
         {
             let synthetic_fill = FillSnapshot::new(
-                first_current_fill.ts_event - 1,
+                first_current_fill.ts_event.saturating_sub(1),
                 venue_position.side,
                 venue_position.qty,
                 venue_position.avg_px,
@@ -728,9 +760,7 @@ mod tests {
     #[rstest]
     fn test_reconciliation_price_long_to_short_flip(_instrument: InstrumentAny) {
         // Long to short flip: 100 @ 1.20 to -100 @ 1.25
-        // (−100 × 1.25) = (100 × 1.20) + (−200 × reconciliation_px)
-        // −125 = 120 + (−200 × reconciliation_px)
-        // reconciliation_px = 1.225
+        // Due to netting simulation resetting value on flip, reconciliation_px = target_avg_px
         let result = calculate_reconciliation_price(
             dec!(100),
             Some(dec!(1.20)),
@@ -738,15 +768,13 @@ mod tests {
             Some(dec!(1.25)),
         );
         assert!(result.is_some());
-        assert_eq!(result.unwrap(), dec!(1.225));
+        assert_eq!(result.unwrap(), dec!(1.25));
     }
 
     #[rstest]
     fn test_reconciliation_price_short_to_long_flip(_instrument: InstrumentAny) {
         // Short to long flip: -100 @ 1.30 to 100 @ 1.25
-        // (100 × 1.25) = (−100 × 1.30) + (200 × reconciliation_px)
-        // 125 = −130 + (200 × reconciliation_px)
-        // reconciliation_px = 1.275
+        // Due to netting simulation resetting value on flip, reconciliation_px = target_avg_px
         let result = calculate_reconciliation_price(
             dec!(-100),
             Some(dec!(1.30)),
@@ -754,7 +782,7 @@ mod tests {
             Some(dec!(1.25)),
         );
         assert!(result.is_some());
-        assert_eq!(result.unwrap(), dec!(1.275));
+        assert_eq!(result.unwrap(), dec!(1.25));
     }
 
     #[rstest]
@@ -793,6 +821,59 @@ mod tests {
             Some(dec!(1.00)),
         );
         assert!(result.is_none());
+    }
+
+    #[rstest]
+    fn test_reconciliation_price_flip_simulation_compatibility() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+        // Start with long position: 100 @ 1.20
+        // Target: -100 @ 1.25
+        // Calculate reconciliation price
+        let recon_px = calculate_reconciliation_price(
+            dec!(100),
+            Some(dec!(1.20)),
+            dec!(-100),
+            Some(dec!(1.25)),
+        )
+        .expect("reconciliation price");
+
+        assert_eq!(recon_px, dec!(1.25));
+
+        // Simulate the flip with reconciliation fill (sell 200 to go from +100 to -100)
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Buy, dec!(100), dec!(1.20), venue_order_id),
+            FillSnapshot::new(2000, OrderSide::Sell, dec!(200), recon_px, venue_order_id),
+        ];
+
+        let (final_qty, final_value) = simulate_position(&fills);
+        assert_eq!(final_qty, dec!(-100));
+        let final_avg = final_value / final_qty.abs();
+        assert_eq!(final_avg, dec!(1.25), "Final average should match target");
+    }
+
+    #[rstest]
+    fn test_reconciliation_price_accumulation_simulation_compatibility() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+        // Start with long position: 100 @ 1.20
+        // Target: 200 @ 1.22
+        let recon_px = calculate_reconciliation_price(
+            dec!(100),
+            Some(dec!(1.20)),
+            dec!(200),
+            Some(dec!(1.22)),
+        )
+        .expect("reconciliation price");
+
+        // Simulate accumulation with reconciliation fill
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Buy, dec!(100), dec!(1.20), venue_order_id),
+            FillSnapshot::new(2000, OrderSide::Buy, dec!(100), recon_px, venue_order_id),
+        ];
+
+        let (final_qty, final_value) = simulate_position(&fills);
+        assert_eq!(final_qty, dec!(200));
+        let final_avg = final_value / final_qty.abs();
+        assert_eq!(final_avg, dec!(1.22), "Final average should match target");
     }
 
     #[rstest]
@@ -873,6 +954,50 @@ mod tests {
         let fills: Vec<FillSnapshot> = vec![];
         let crossings = detect_zero_crossings(&fills);
         assert_eq!(crossings.len(), 0);
+    }
+
+    #[rstest]
+    fn test_detect_zero_crossings_long_to_short_flip() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+        // Buy 10, then Sell 15 -> flip from +10 to -5
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Buy, dec!(10), dec!(100), venue_order_id),
+            FillSnapshot::new(2000, OrderSide::Sell, dec!(15), dec!(102), venue_order_id), // Flip
+        ];
+
+        let crossings = detect_zero_crossings(&fills);
+        assert_eq!(crossings.len(), 1);
+        assert_eq!(crossings[0], 2000); // Detected the flip
+    }
+
+    #[rstest]
+    fn test_detect_zero_crossings_short_to_long_flip() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+        // Sell 10, then Buy 20 -> flip from -10 to +10
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Sell, dec!(10), dec!(100), venue_order_id),
+            FillSnapshot::new(2000, OrderSide::Buy, dec!(20), dec!(102), venue_order_id), // Flip
+        ];
+
+        let crossings = detect_zero_crossings(&fills);
+        assert_eq!(crossings.len(), 1);
+        assert_eq!(crossings[0], 2000);
+    }
+
+    #[rstest]
+    fn test_detect_zero_crossings_multiple_flips() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Buy, dec!(10), dec!(100), venue_order_id),
+            FillSnapshot::new(2000, OrderSide::Sell, dec!(10), dec!(102), venue_order_id), // Land on zero
+            FillSnapshot::new(3000, OrderSide::Sell, dec!(5), dec!(103), venue_order_id), // Go short
+            FillSnapshot::new(4000, OrderSide::Buy, dec!(15), dec!(104), venue_order_id), // Flip to long
+        ];
+
+        let crossings = detect_zero_crossings(&fills);
+        assert_eq!(crossings.len(), 2);
+        assert_eq!(crossings[0], 2000); // First zero-crossing (land on zero)
+        assert_eq!(crossings[1], 4000); // Second zero-crossing (flip)
     }
 
     #[rstest]
@@ -1155,5 +1280,111 @@ mod tests {
             }
             _ => panic!("Expected AddSyntheticOpening, got {:?}", result),
         }
+    }
+
+    #[rstest]
+    fn test_adjust_fills_timestamp_underflow_protection() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+
+        // First fill at timestamp 0 - saturating_sub should prevent underflow
+        let fills = vec![FillSnapshot::new(
+            0,
+            OrderSide::Buy,
+            dec!(0.01),
+            dec!(4100.00),
+            venue_order_id,
+        )];
+
+        let venue_position = VenuePositionSnapshot {
+            side: OrderSide::Buy,
+            qty: dec!(0.02),
+            avg_px: dec!(4100.00),
+        };
+
+        let instrument = instrument();
+        let result =
+            adjust_fills_for_partial_window(&fills, &venue_position, &instrument, dec!(0.0001));
+
+        // Should add synthetic fill with timestamp 0 (not u64::MAX)
+        match result {
+            FillAdjustmentResult::AddSyntheticOpening { synthetic_fill, .. } => {
+                assert_eq!(synthetic_fill.ts_event, 0); // saturating_sub(1) from 0 = 0
+            }
+            _ => panic!("Expected AddSyntheticOpening, got {:?}", result),
+        }
+    }
+
+    #[rstest]
+    fn test_adjust_fills_with_flip_scenario() {
+        let venue_order_id1 = create_test_venue_order_id("ORDER1");
+        let venue_order_id2 = create_test_venue_order_id("ORDER2");
+
+        // Long 10 @ 100, then Sell 20 @ 105 -> flip to Short 10 @ 105
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Buy, dec!(10), dec!(100), venue_order_id1),
+            FillSnapshot::new(2000, OrderSide::Sell, dec!(20), dec!(105), venue_order_id2), // Flip
+        ];
+
+        let venue_position = VenuePositionSnapshot {
+            side: OrderSide::Sell,
+            qty: dec!(10),
+            avg_px: dec!(105),
+        };
+
+        let instrument = instrument();
+        let result =
+            adjust_fills_for_partial_window(&fills, &venue_position, &instrument, dec!(0.0001));
+
+        // Should recognize the flip and match correctly
+        match result {
+            FillAdjustmentResult::NoAdjustment => {
+                // Verify simulation matches
+                let (qty, value) = simulate_position(&fills);
+                assert_eq!(qty, dec!(-10));
+                let avg = value / qty.abs();
+                assert_eq!(avg, dec!(105));
+            }
+            _ => panic!("Expected NoAdjustment for matching flip, got {:?}", result),
+        }
+    }
+
+    #[rstest]
+    fn test_detect_zero_crossings_complex_lifecycle() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+        // Complex scenario with multiple lifecycles
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Buy, dec!(100), dec!(1.20), venue_order_id),
+            FillSnapshot::new(2000, OrderSide::Sell, dec!(50), dec!(1.25), venue_order_id), // Reduce
+            FillSnapshot::new(3000, OrderSide::Sell, dec!(100), dec!(1.30), venue_order_id), // Flip to -50
+            FillSnapshot::new(4000, OrderSide::Buy, dec!(50), dec!(1.28), venue_order_id), // Close to zero
+            FillSnapshot::new(5000, OrderSide::Buy, dec!(75), dec!(1.22), venue_order_id), // Open long
+            FillSnapshot::new(6000, OrderSide::Sell, dec!(150), dec!(1.24), venue_order_id), // Flip to -75
+        ];
+
+        let crossings = detect_zero_crossings(&fills);
+        assert_eq!(crossings.len(), 3);
+        assert_eq!(crossings[0], 3000); // First flip
+        assert_eq!(crossings[1], 4000); // Close to zero
+        assert_eq!(crossings[2], 6000); // Second flip
+    }
+
+    #[rstest]
+    fn test_reconciliation_price_partial_close() {
+        let venue_order_id = create_test_venue_order_id("ORDER1");
+        // Partial close scenario: 100 @ 1.20 to 50 @ 1.20
+        let recon_px =
+            calculate_reconciliation_price(dec!(100), Some(dec!(1.20)), dec!(50), Some(dec!(1.20)))
+                .expect("reconciliation price");
+
+        // Simulate partial close
+        let fills = vec![
+            FillSnapshot::new(1000, OrderSide::Buy, dec!(100), dec!(1.20), venue_order_id),
+            FillSnapshot::new(2000, OrderSide::Sell, dec!(50), recon_px, venue_order_id),
+        ];
+
+        let (final_qty, final_value) = simulate_position(&fills);
+        assert_eq!(final_qty, dec!(50));
+        let final_avg = final_value / final_qty.abs();
+        assert_eq!(final_avg, dec!(1.20), "Average should be maintained");
     }
 }

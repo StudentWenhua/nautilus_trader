@@ -128,7 +128,7 @@ def eurusd_instrument():
             Decimal("1.20000"),
             Decimal("-100"),
             Decimal("1.25000"),
-            Price(1.22500, precision=5),
+            Price(1.25000, precision=5),
             "Long to short flip",
         ),
         (
@@ -136,7 +136,7 @@ def eurusd_instrument():
             Decimal("1.30000"),
             Decimal("100"),
             Decimal("1.25000"),
-            Price(1.27500, precision=5),
+            Price(1.25000, precision=5),
             "Short to long flip",
         ),
         # Complex scenario
@@ -539,7 +539,7 @@ def test_adjust_fills_incomplete_lifecycle_adds_synthetic_fill(ethusdt_instrumen
     assert venue_order_id in result  # Original order still present
 
     # Find the synthetic venue_order_id
-    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("SYNTH-")]
+    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("S-")]
     assert len(synthetic_venue_order_ids) == 1
     synthetic_venue_order_id = synthetic_venue_order_ids[0]
 
@@ -549,7 +549,7 @@ def test_adjust_fills_incomplete_lifecycle_adds_synthetic_fill(ethusdt_instrumen
 
     # Verify synthetic fill properties
     synthetic_fill = synthetic_fills[0]
-    assert synthetic_fill.trade_id.value.startswith("SYNTH-")
+    assert synthetic_fill.trade_id.value.startswith("S-")
     assert synthetic_fill.account_id == AccountId("TEST-ACCOUNT")
     assert synthetic_fill.last_qty == Quantity.from_str("0.02")
     # Working backwards: 0.04 @ 4100 = (0.02 @ X) + (0.02 @ 4200)
@@ -735,7 +735,7 @@ def test_adjust_fills_current_lifecycle_mismatch_creates_synthetic(ethusdt_instr
     assert len(result) == 1
 
     # Should have a synthetic venue_order_id (not ORDER-004)
-    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("SYNTH-")]
+    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("S-")]
     assert len(synthetic_venue_order_ids) == 1
     synthetic_venue_order_id = synthetic_venue_order_ids[0]
 
@@ -746,7 +746,7 @@ def test_adjust_fills_current_lifecycle_mismatch_creates_synthetic(ethusdt_instr
     assert len(fills) == 1
 
     synthetic_fill = fills[0]
-    assert synthetic_fill.trade_id.value.startswith("SYNTH-")
+    assert synthetic_fill.trade_id.value.startswith("S-")
     assert synthetic_fill.account_id == AccountId("TEST-ACCOUNT")
     assert synthetic_fill.last_qty == Quantity.from_str("0.05")
     assert synthetic_fill.last_px == Price.from_str("4142.04")  # Matches venue
@@ -840,7 +840,7 @@ def test_adjust_fills_oldest_lifecycle_incomplete_adds_synthetic(ethusdt_instrum
     assert VenueOrderId("ORDER-002") in result  # Original order still present
 
     # Find the synthetic venue_order_id
-    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("SYNTH-")]
+    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("S-")]
     assert len(synthetic_venue_order_ids) == 1
     synthetic_venue_order_id = synthetic_venue_order_ids[0]
 
@@ -850,7 +850,7 @@ def test_adjust_fills_oldest_lifecycle_incomplete_adds_synthetic(ethusdt_instrum
 
     # Verify synthetic fill properties
     synthetic_fill = synthetic_fills[0]
-    assert synthetic_fill.trade_id.value.startswith("SYNTH-")
+    assert synthetic_fill.trade_id.value.startswith("S-")
     assert synthetic_fill.account_id == AccountId("TEST-ACCOUNT")
     assert synthetic_fill.order_side == OrderSide.BUY
     # Working backwards: 0.06 @ 4150 = (0.04 @ X) + (0.02 @ 4200)
@@ -935,7 +935,7 @@ def test_adjust_fills_short_position(ethusdt_instrument):
     assert venue_order_id in result  # Original order still present
 
     # Find the synthetic venue_order_id
-    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("SYNTH-")]
+    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("S-")]
     assert len(synthetic_venue_order_ids) == 1
     synthetic_venue_order_id = synthetic_venue_order_ids[0]
 
@@ -945,7 +945,7 @@ def test_adjust_fills_short_position(ethusdt_instrument):
 
     # Verify synthetic fill properties
     synthetic_fill = synthetic_fills[0]
-    assert synthetic_fill.trade_id.value.startswith("SYNTH-")
+    assert synthetic_fill.trade_id.value.startswith("S-")
     assert synthetic_fill.order_side == OrderSide.SELL
     # Working backwards: -0.05 @ 4100 = (-0.03 @ X) + (-0.02 @ 4120)
     # -205 = -0.03X + -82.4

@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use nautilus_core::{UnixNanos, python::to_pyvalue_err};
+use nautilus_core::{UUID4, UnixNanos, python::to_pyvalue_err};
 use nautilus_model::{
     enums::{LiquiditySide, OrderSide, OrderStatus, OrderType, PositionSideSpecified, TimeInForce},
     identifiers::{AccountId, InstrumentId, TradeId, VenueOrderId},
@@ -32,7 +32,6 @@ use pyo3::{
     types::{PyDict, PyList, PyTuple},
 };
 use rust_decimal::Decimal;
-use ustr::Ustr;
 
 use crate::reconciliation::calculations::{
     FillAdjustmentResult, FillSnapshot, VenuePositionSnapshot, adjust_fills_for_partial_window,
@@ -163,6 +162,9 @@ pub fn py_adjust_fills_for_partial_window(
         }
     }
 
+    // Sort fills by timestamp to ensure chronological order
+    fill_snapshots.sort_by_key(|f| f.ts_event);
+
     if fill_snapshots.is_empty() {
         // Return original orders and fills if no fills found
         return py_tuple_from_reports(py, &order_map, &fill_map);
@@ -278,13 +280,13 @@ pub fn py_adjust_fills_for_partial_window(
     py_tuple_from_reports(py, &adjusted_orders, &adjusted_fills)
 }
 
-/// Create a synthetic VenueOrderId from a timestamp.
+/// Create a synthetic VenueOrderId using timestamp and UUID suffix.
 fn create_synthetic_venue_order_id(ts_event: u64) -> VenueOrderId {
-    let uuid_str = Ustr::from(&ts_event.to_string());
-    let venue_order_id_value = format!(
-        "SYNTH-{}",
-        &uuid_str.as_str()[..std::cmp::min(29, uuid_str.len())]
-    );
+    let uuid = UUID4::new();
+    // Use hex timestamp and first 8 chars of UUID for uniqueness while keeping it short
+    let uuid_str = uuid.to_string();
+    let uuid_suffix = &uuid_str[..8];
+    let venue_order_id_value = format!("S-{:x}-{}", ts_event, uuid_suffix);
     VenueOrderId::new(&venue_order_id_value)
 }
 
@@ -329,11 +331,11 @@ fn create_synthetic_fill_report(
     instrument: &InstrumentAny,
     venue_order_id: VenueOrderId,
 ) -> PyResult<FillReport> {
-    let uuid_str = Ustr::from(&fill.ts_event.to_string());
-    let trade_id_value = format!(
-        "SYNTH-{}",
-        &uuid_str.as_str()[..std::cmp::min(29, uuid_str.len())]
-    );
+    let uuid = UUID4::new();
+    // Use hex timestamp and first 8 chars of UUID for uniqueness while keeping it short
+    let uuid_str = uuid.to_string();
+    let uuid_suffix = &uuid_str[..8];
+    let trade_id_value = format!("S-{:x}-{}", fill.ts_event, uuid_suffix);
     let trade_id = TradeId::new(&trade_id_value);
 
     let qty_f64 = fill
@@ -392,7 +394,7 @@ fn py_tuple_from_reports(
 ///
 /// This is a pure function that calculates what price a fill would need to have
 /// to move from the current position state to the target position state with the
-/// correct average price.
+/// correct average price, accounting for the netting simulation logic.
 ///
 /// # Parameters
 ///
@@ -407,8 +409,10 @@ fn py_tuple_from_reports(
 ///
 /// # Notes
 ///
-/// The function calculates the reconciliation price using the formula:
-/// `(target_qty * target_avg_px) = (current_qty * current_avg_px) + (qty_diff * reconciliation_px)`
+/// The function handles three scenarios:
+/// 1. Flat to position: reconciliation_px = target_avg_px
+/// 2. Position flip (sign change): reconciliation_px = target_avg_px (due to value reset in simulation)
+/// 3. Accumulation/reduction: weighted average formula
 #[pyfunction(name = "calculate_reconciliation_price")]
 #[pyo3(signature = (current_position_qty, current_position_avg_px, target_position_qty, target_position_avg_px))]
 pub fn py_calculate_reconciliation_price(
