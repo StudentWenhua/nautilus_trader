@@ -75,6 +75,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.model.instruments import CurrencyPair
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import Order
@@ -2063,6 +2064,29 @@ class LiveExecutionEngine(ExecutionEngine):
                     if quote:
                         open_price = (
                             quote.ask_price if open_side == OrderSide.BUY else quote.bid_price
+                        )
+                    elif close_price:
+                        # Only allow fallback for CurrencyPair since spot asset positions may lack cost basis
+                        is_currency_pair = isinstance(instrument, CurrencyPair)
+
+                        if is_currency_pair:
+                            open_price = close_price
+                            self._log.warning(
+                                f"Using close price {close_price} as fallback for opening position "
+                                f"in cross-zero reconciliation for {report.instrument_id}; "
+                                f"venue position report lacks avg_px_open (spot asset position without cost basis)",
+                            )
+                        else:
+                            self._log.error(
+                                f"Cannot determine open price for {report.instrument_id}: "
+                                f"venue position report lacks avg_px_open and no quote tick available; "
+                                f"this fallback is only allowed for CurrencyPair (spot asset) positions",
+                            )
+                    else:
+                        self._log.error(
+                            f"Cannot determine open price for {report.instrument_id}: "
+                            f"no close price available (existing position lacks avg_px), "
+                            f"venue position report lacks avg_px_open, and no quote tick available",
                         )
 
                 open_result = False
