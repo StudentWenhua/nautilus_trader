@@ -15,19 +15,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.config import PositiveFloat
 from nautilus_trader.config import PositiveInt
+from nautilus_trader.core.nautilus_pyo3 import BybitMarginMode
+from nautilus_trader.core.nautilus_pyo3 import BybitPositionMode
 from nautilus_trader.core.nautilus_pyo3 import BybitProductType
 
 
-if TYPE_CHECKING:
-    from nautilus_trader.adapters.bybit.common.enums import BybitMarginMode
-    from nautilus_trader.adapters.bybit.common.enums import BybitPositionMode
-    from nautilus_trader.adapters.bybit.common.symbol import BybitSymbol
+# Placeholder type for config type hints - BybitSymbol not yet exposed from Rust
+BybitSymbol = str
 
 
 class BybitDataClientConfig(LiveDataClientConfig, frozen=True):

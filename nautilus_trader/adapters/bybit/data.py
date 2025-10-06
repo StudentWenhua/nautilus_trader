@@ -24,15 +24,20 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.data.messages import SubscribeBars
+from nautilus_trader.data.messages import SubscribeFundingRates
 from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import SubscribeTradeTicks
+from nautilus_trader.data.messages import UnsubscribeBars
+from nautilus_trader.data.messages import UnsubscribeFundingRates
 from nautilus_trader.data.messages import UnsubscribeOrderBook
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.cancellation import DEFAULT_FUTURE_CANCELLATION_TIMEOUT
 from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.model.data import capsule_to_data
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import book_type_to_str
 from nautilus_trader.model.identifiers import ClientId
@@ -105,16 +110,12 @@ class BybitDataClient(LiveMarketDataClient):
             nautilus_pyo3.BybitWebSocketClient,
         ] = {}
         environment = (
-            nautilus_pyo3.BybitEnvironment.Testnet
+            nautilus_pyo3.BybitEnvironment.TESTNET
             if config.testnet
-            else nautilus_pyo3.BybitEnvironment.Mainnet
+            else nautilus_pyo3.BybitEnvironment.MAINNET
         )
 
         for product_type in config.product_types:
-            self._log.info(
-                f"product_type={product_type}, type={type(product_type).__module__}.{type(product_type).__name__}",
-                LogColor.YELLOW,
-            )
             ws_client = nautilus_pyo3.BybitWebSocketClient.new_public(
                 product_type=product_type,
                 environment=environment,
@@ -141,8 +142,7 @@ class BybitDataClient(LiveMarketDataClient):
             self._log.info(f"Connected to {product_type.name} websocket", LogColor.BLUE)
 
     async def _disconnect(self) -> None:
-        # TODO: Implement cancel_all_requests for BybitHttpClient
-        # self._http_client.cancel_all_requests()
+        self._http_client.cancel_all_requests()
 
         # Delay to allow websocket to send any unsubscribe messages
         await asyncio.sleep(1.0)
@@ -192,6 +192,39 @@ class BybitDataClient(LiveMarketDataClient):
         # TODO: Map instrument_id to correct product type
         return next(iter(self._ws_clients.values()))
 
+    def _bar_spec_to_bybit_interval(self, bar_spec) -> str:
+        """
+        Convert a Nautilus bar spec to a Bybit kline interval string.
+        """
+        # Bybit supported intervals: 1 3 5 15 30 60 120 240 360 720 D W M
+        # Map (aggregation, step) to Bybit interval
+        interval_map = {
+            (4, 1): "1",  # MINUTE: 1
+            (4, 3): "3",  # MINUTE: 3
+            (4, 5): "5",  # MINUTE: 5
+            (4, 15): "15",  # MINUTE: 15
+            (4, 30): "30",  # MINUTE: 30
+            (5, 1): "60",  # HOUR: 1
+            (5, 2): "120",  # HOUR: 2
+            (5, 4): "240",  # HOUR: 4
+            (5, 6): "360",  # HOUR: 6
+            (5, 12): "720",  # HOUR: 12
+            (6, 1): "D",  # DAY: 1
+            (7, 1): "W",  # WEEK: 1
+            (8, 1): "M",  # MONTH: 1
+        }
+
+        key = (bar_spec.aggregation, bar_spec.step)
+        interval = interval_map.get(key)
+
+        if interval is None:
+            self._log.warning(
+                f"Unsupported bar spec {bar_spec}, defaulting to 1 minute",
+            )
+            return "1"
+
+        return interval
+
     async def _subscribe_order_book_deltas(self, command: SubscribeOrderBook) -> None:
         if command.book_type != BookType.L2_MBP:
             self._log.warning(
@@ -225,6 +258,27 @@ class BybitDataClient(LiveMarketDataClient):
 
         await ws_client.subscribe_trades(symbol)
 
+    async def _subscribe_bars(self, command: SubscribeBars) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+            command.bar_type.instrument_id.value,
+        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        symbol = command.bar_type.instrument_id.symbol.value
+
+        # Convert bar spec to Bybit kline interval
+        interval = self._bar_spec_to_bybit_interval(command.bar_type.spec)
+        await ws_client.subscribe_klines(symbol, interval)
+
+    async def _subscribe_funding_rates(self, command: SubscribeFundingRates) -> None:
+        # Bybit doesn't have a separate funding rate subscription
+        # Funding rate data comes through ticker subscriptions for perpetual instruments
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        symbol = command.instrument_id.symbol.value
+
+        # Subscribe to ticker which includes funding rate updates
+        await ws_client.subscribe_ticker(symbol)
+
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
@@ -251,27 +305,46 @@ class BybitDataClient(LiveMarketDataClient):
 
         await ws_client.unsubscribe_trades(symbol)
 
+    async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+            command.bar_type.instrument_id.value,
+        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        symbol = command.bar_type.instrument_id.symbol.value
+
+        # Convert bar spec to Bybit kline interval
+        interval = self._bar_spec_to_bybit_interval(command.bar_type.spec)
+        await ws_client.unsubscribe_klines(symbol, interval)
+
+    async def _unsubscribe_funding_rates(self, command: UnsubscribeFundingRates) -> None:
+        # Bybit doesn't have a separate funding rate subscription
+        # Unsubscribe from ticker which includes funding rate updates
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        symbol = command.instrument_id.symbol.value
+
+        await ws_client.unsubscribe_ticker(symbol)
+
     def _handle_msg(self, raw: object) -> None:
         """
         Handle websocket message from Rust client.
         """
         try:
-            # Handle Nautilus data types (from Rust)
-            if hasattr(raw, "__class__") and hasattr(raw.__class__, "__name__"):
-                class_name = raw.__class__.__name__
+            # Handle pycapsule data from Rust (market data)
+            if nautilus_pyo3.is_pycapsule(raw):
+                # The capsule will fall out of scope at the end of this method,
+                # and eventually be garbage collected. The contained pointer
+                # to `Data` is still owned and managed by Rust.
+                data = capsule_to_data(raw)
+                self._handle_data(data)
+                return
 
-                # Market data types from Rust
-                if class_name in ("TradeTick", "QuoteTick", "OrderBookDeltas_API"):
-                    self._handle_data(raw)
-                    return
-
-            # Handle JSON messages (auth, subscription responses, account data)
-            msg_str = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            if isinstance(msg_str, str):
+            # Handle JSON messages (auth, subscription responses, raw/unhandled messages)
+            msg_str = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            if msg_str:
                 self._log.debug(f"WebSocket message: {msg_str}")
-                # These are likely auth/subscription confirmations or account updates
-                # For now, just log them
-                # TODO: Handle account messages (orders, executions, positions, wallet)
+                # These are likely auth/subscription confirmations or raw/unhandled messages
+                # Log them for debugging
 
         except Exception as e:
             self._log.error(f"Error handling websocket message: {e}")

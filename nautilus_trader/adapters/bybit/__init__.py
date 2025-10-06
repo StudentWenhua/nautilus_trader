@@ -35,8 +35,8 @@ from nautilus_trader.adapters.bybit.factories import get_bybit_http_client
 from nautilus_trader.adapters.bybit.factories import get_bybit_instrument_provider
 from nautilus_trader.adapters.bybit.loaders import BybitOrderBookDeltaDataLoader
 from nautilus_trader.adapters.bybit.providers import BybitInstrumentProvider
-from nautilus_trader.adapters.bybit.schemas.market.ticker import BybitTickerData
 from nautilus_trader.core.nautilus_pyo3 import BybitProductType
+from nautilus_trader.core.nautilus_pyo3 import BybitTickerData
 
 
 __all__ = [

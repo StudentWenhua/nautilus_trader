@@ -5653,7 +5653,7 @@ class BookImbalanceRatio:
 BYBIT_NAUTILUS_BROKER_ID: Final[str]
 
 class BybitAccountType(Enum):
-    Unified = "Unified"
+    UNIFIED = "UNIFIED"
 
 class BybitProductType(Enum):
     SPOT = "spot"
@@ -5662,9 +5662,40 @@ class BybitProductType(Enum):
     OPTION = "option"
 
 class BybitEnvironment(Enum):
-    Mainnet = "Mainnet"
-    Demo = "Demo"
-    Testnet = "Testnet"
+    MAINNET = "mainnet"
+    DEMO = "demo"
+    TESTNET = "testnet"
+
+class BybitMarginMode(Enum):
+    ISOLATED_MARGIN = "ISOLATED_MARGIN"
+    REGULAR_MARGIN = "REGULAR_MARGIN"
+    PORTFOLIO_MARGIN = "PORTFOLIO_MARGIN"
+
+class BybitPositionMode(Enum):
+    MergedSingle = 0
+    BothSides = 3
+
+class BybitTickerData:
+    @property
+    def symbol(self) -> str: ...
+    @property
+    def bid1_price(self) -> str: ...
+    @property
+    def bid1_size(self) -> str: ...
+    @property
+    def ask1_price(self) -> str: ...
+    @property
+    def ask1_size(self) -> str: ...
+    @property
+    def last_price(self) -> str: ...
+    @property
+    def high_price24h(self) -> str: ...
+    @property
+    def low_price24h(self) -> str: ...
+    @property
+    def turnover24h(self) -> str: ...
+    @property
+    def volume24h(self) -> str: ...
 
 class BybitWebSocketError:
     @property
@@ -5696,11 +5727,100 @@ class BybitHttpClient:
     @property
     def api_key(self) -> str | None: ...
     def add_instrument(self, instrument: Instrument) -> None: ...
+    def cancel_all_requests(self) -> None: ...
     async def request_instruments(
         self,
         product_type: BybitProductType,
         symbol: str | None = None,
     ) -> list[Instrument]: ...
+    async def submit_order(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+        price: Price | None = None,
+        reduce_only: bool = False,
+    ) -> OrderStatusReport: ...
+    async def cancel_order(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+    ) -> OrderStatusReport: ...
+    async def cancel_all_orders(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        account_id: AccountId,
+    ) -> list[OrderStatusReport]: ...
+    async def modify_order(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+        quantity: Quantity | None = None,
+        price: Price | None = None,
+    ) -> OrderStatusReport: ...
+    async def query_order(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        account_id: AccountId,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+    ) -> OrderStatusReport | None: ...
+    async def request_order_status_reports(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId | None = None,
+        open_only: bool = False,
+        limit: int | None = None,
+    ) -> list[OrderStatusReport]: ...
+    async def request_trades(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        limit: int | None = None,
+    ) -> list[TradeTick]: ...
+    async def request_bars(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        bar_type: BarType,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        limit: int | None = None,
+    ) -> list[Bar]: ...
+    async def request_fill_reports(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int | None = None,
+    ) -> list[FillReport]: ...
+    async def request_position_status_reports(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId | None = None,
+    ) -> list[PositionStatusReport]: ...
+    async def request_account_state(
+        self,
+        account_type: BybitAccountType,
+        account_id: AccountId,
+    ) -> AccountState: ...
+    async def request_fee_rates(
+        self,
+        account_type: BybitAccountType,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+    ) -> list[Any]: ...
 
 class BybitWebSocketClient:
     @staticmethod

@@ -23,7 +23,6 @@ from nautilus_trader.adapters.bybit.config import BybitExecClientConfig
 from nautilus_trader.adapters.bybit.constants import BYBIT_ALL_PRODUCTS
 from nautilus_trader.adapters.bybit.data import BybitDataClient
 from nautilus_trader.adapters.bybit.execution import BybitExecutionClient
-from nautilus_trader.adapters.bybit.http.client import BybitHttpClient
 from nautilus_trader.adapters.bybit.providers import BybitInstrumentProvider
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
@@ -210,17 +209,16 @@ class BybitLiveExecClientFactory(LiveExecClientFactory):
 
         """
         product_types = config.product_types or BYBIT_ALL_PRODUCTS
-        # Use old Python HTTP client for execution (not yet converted to Rust)
-        client: BybitHttpClient = BybitHttpClient(
-            clock=clock,
+        # Use Rust HTTP client
+        client: nautilus_pyo3.BybitHttpClient = get_cached_bybit_http_client(
             api_key=config.api_key,
             api_secret=config.api_secret,
             base_url=config.base_url_http,
+            testnet=config.testnet,
         )
-        provider = BybitInstrumentProvider(
+        provider = get_cached_bybit_instrument_provider(
             client=client,
-            clock=clock,
-            product_types=product_types,
+            product_types=tuple(product_types),
             config=config.instrument_provider,
         )
         return BybitExecutionClient(
@@ -230,9 +228,6 @@ class BybitLiveExecClientFactory(LiveExecClientFactory):
             cache=cache,
             clock=clock,
             instrument_provider=provider,
-            product_types=product_types,
-            base_url_ws_private=config.base_url_ws_private,
-            base_url_ws_trade=config.base_url_ws_trade,
             config=config,
             name=name,
         )
