@@ -25,6 +25,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import ExecutionMassStatus
 from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
+from nautilus_trader.model.currencies import register_currency
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.events import OrderAccepted
@@ -39,6 +40,7 @@ from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.instruments import Instrument
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -534,6 +536,15 @@ def adjust_fills_for_partial_window(
         Tuple of (adjusted order reports, adjusted fill reports) matching venue position.
 
     """
+    # Register all required commission currencies
+    seen_currencies: set[Currency] = set()
+    for fill_list in mass_status.fill_reports.values():
+        for fill in fill_list:
+            currency = fill.commission.currency
+            if currency not in seen_currencies:
+                register_currency(currency)
+                seen_currencies.add(currency)
+
     pyo3_mass_status = mass_status.to_pyo3()
     pyo3_instrument = transform_instrument_to_pyo3(instrument)
 

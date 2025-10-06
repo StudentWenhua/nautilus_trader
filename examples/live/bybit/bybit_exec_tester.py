@@ -68,8 +68,14 @@ instrument_id = InstrumentId.from_str(f"{symbol}.{BYBIT}")
 reconciliation_instrument_ids = [instrument_id]
 # reconciliation_instrument_ids = [instrument_id, instrument_id2]
 
-product_types: list[BybitProductType] = [product_type]
+# product_types: list[BybitProductType] = [product_type]
 # product_types: list[BybitProductType] = [product_type, BybitProductType.LINEAR]
+product_types: list[BybitProductType] = [
+    BybitProductType.SPOT,
+    BybitProductType.LINEAR,
+    BybitProductType.INVERSE,
+    BybitProductType.OPTION,
+]
 
 # INVERSE
 # product_type = BybitProductType.INVERSE
