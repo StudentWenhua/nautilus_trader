@@ -134,6 +134,7 @@ class LiveExecutionEngine(ExecutionEngine):
         self._ts_last_query: dict[ClientOrderId, int] = {}
         self._order_local_activity_ns: dict[ClientOrderId, int] = {}
         self._inferred_fill_ts: dict[ClientOrderId, int] = {}
+        self._fill_application_audit: dict[ClientOrderId, list[tuple[TradeId, str, int]]] = {}
         self._startup_reconciliation_event: asyncio.Event = asyncio.Event()
         self._filtered_external_orders_count: int = 0
 
@@ -462,6 +463,7 @@ class LiveExecutionEngine(ExecutionEngine):
             self._clear_recon_tracking(order.client_order_id)
             self._order_local_activity_ns.pop(order.client_order_id, None)
             self._inferred_fill_ts.pop(order.client_order_id, None)
+            self._fill_application_audit.pop(order.client_order_id, None)
 
     def _on_start(self) -> None:
         if not self._loop.is_running():
@@ -1109,6 +1111,17 @@ class LiveExecutionEngine(ExecutionEngine):
                     self._log.debug(
                         f"Order {client_order_id!r} not found at venue, retry {retries + 1}/{self.open_check_missing_retries}",
                     )
+
+            # Perform sanity check on all open orders to detect internal inconsistencies
+            for order in self._cache.orders_open():
+                computed_filled = sum(
+                    e.last_qty for e in order.events if isinstance(e, OrderFilled)
+                )
+                if computed_filled != order.filled_qty:
+                    self._log.error(
+                        f"INCONSISTENCY: {order.client_order_id} "
+                        f"computed={computed_filled} vs cached={order.filled_qty}",
+                    )
         except Exception as e:
             self._log.exception("Error in check_order_consistency", e)
 
@@ -1681,10 +1694,27 @@ class LiveExecutionEngine(ExecutionEngine):
             self._log.warning("report.avg_px was `None` when a value was expected")
 
         if report.filled_qty < order.filled_qty:
+            # Gather diagnostic information
+            fill_history = [
+                (event.trade_id, event.last_qty, event.ts_event)
+                for event in order.events
+                if isinstance(event, OrderFilled)
+            ]
+
             self._log.error(
                 f"report.filled_qty {report.filled_qty} < order.filled_qty {order.filled_qty}, "
-                "this could potentially be caused by duplicate fills or corrupted cached state",
+                f"this could potentially be caused by duplicate fills or corrupted cached state; "
+                f"order_id={order.client_order_id}, venue_order_id={order.venue_order_id}, "
+                f"total_fills_applied={len(fill_history)}, "
+                f"fill_trade_ids={order.trade_ids}, "
+                f"inferred_fill={'yes' if client_order_id in self._inferred_fill_ts else 'no'}, "
+                f"order_status={order.status}, report_status={report.order_status}",
             )
+
+            # Log each fill for forensics
+            for trade_id, qty, ts in fill_history:
+                self._log.error(f"  Fill: {trade_id}, qty={qty}, ts={ts}")
+
             return False  # Failed
 
         if report.filled_qty > order.filled_qty:
@@ -1780,6 +1810,17 @@ class LiveExecutionEngine(ExecutionEngine):
             # Fill already applied; check if data is consistent.
             # An existing fill may be sourced from the cache on start,
             # or may exist in-memory when a reconciliation is triggered.
+
+            # Log detailed info about when it was first applied
+            if order.client_order_id in self._fill_application_audit:
+                audit = self._fill_application_audit[order.client_order_id]
+                previous = [a for a in audit if a[0] == report.trade_id]
+                if previous:
+                    self._log.warning(
+                        f"Duplicate fill detected; {report.trade_id} was already applied "
+                        f"at ts={previous[0][2]}, source={previous[0][1]}",
+                    )
+
             existing_fill = self._get_existing_fill_for_trade_id(order, report.trade_id)
 
             if existing_fill:
@@ -1838,12 +1879,35 @@ class LiveExecutionEngine(ExecutionEngine):
             )
             return False  # Reject fill to prevent overfill
 
+        # Verify total fills consistency BEFORE applying
+        current_total = sum(
+            event.last_qty for event in order.events if isinstance(event, OrderFilled)
+        )
+        if current_total != order.filled_qty:
+            self._log.error(
+                f"INCONSISTENCY DETECTED before applying fill: "
+                f"sum(fills)={current_total} != order.filled_qty={order.filled_qty} "
+                f"for {order.client_order_id}",
+            )
+
+        # Track fill application in audit trail BEFORE generating the fill
+        # This ensures cleanup on close remains effective if this fill closes the order
+        if order.client_order_id not in self._fill_application_audit:
+            self._fill_application_audit[order.client_order_id] = []
+
+        audit_entry = (report.trade_id, "reconciliation", self._clock.timestamp_ns())
+        self._fill_application_audit[order.client_order_id].append(audit_entry)
+
         try:
             self._generate_order_filled(order, report, instrument)
         except InvalidStateTrigger as e:
+            # Roll back audit entry since fill was not applied
+            self._fill_application_audit[order.client_order_id].remove(audit_entry)
             self._log.error(str(e))
             return False
         except ValueError as e:
+            # Roll back audit entry since fill was not applied
+            self._fill_application_audit[order.client_order_id].remove(audit_entry)
             # Handle the negative leaves_qty error
             self._log.exception(
                 f"ValueError when applying fill to {order.client_order_id!r}: {e}",
