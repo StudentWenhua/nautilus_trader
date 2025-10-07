@@ -124,6 +124,7 @@ class BybitDataClient(LiveMarketDataClient):
             )
             self._ws_clients[product_type] = ws_client
 
+        self._depths: dict[nautilus_pyo3.InstrumentId, int] = {}
         self._ws_client_futures: set[asyncio.Future] = set()
 
     @property
@@ -185,45 +186,36 @@ class BybitDataClient(LiveMarketDataClient):
         self,
         instrument_id: nautilus_pyo3.InstrumentId,
     ) -> nautilus_pyo3.BybitWebSocketClient:
-        """
-        Get the appropriate websocket client for an instrument.
-        """
-        # For now, use the first available client
-        # TODO: Map instrument_id to correct product type
-        return next(iter(self._ws_clients.values()))
+        symbol = instrument_id.symbol.value
+
+        if symbol.endswith("-SPOT"):
+            product_type = nautilus_pyo3.BybitProductType.SPOT
+        elif symbol.endswith("-LINEAR"):
+            product_type = nautilus_pyo3.BybitProductType.LINEAR
+        elif symbol.endswith("-INVERSE"):
+            product_type = nautilus_pyo3.BybitProductType.INVERSE
+        elif symbol.endswith("-OPTION"):
+            product_type = nautilus_pyo3.BybitProductType.OPTION
+        else:
+            # Fallback to first available client
+            self._log.warning(
+                f"Could not determine product type for {symbol}, using first available client",
+            )
+            return next(iter(self._ws_clients.values()))
+
+        ws_client = self._ws_clients.get(product_type)
+        if ws_client is None:
+            raise ValueError(
+                f"No WebSocket client configured for product type {product_type.name}",
+            )
+
+        return ws_client
 
     def _bar_spec_to_bybit_interval(self, bar_spec) -> str:
-        """
-        Convert a Nautilus bar spec to a Bybit kline interval string.
-        """
-        # Bybit supported intervals: 1 3 5 15 30 60 120 240 360 720 D W M
-        # Map (aggregation, step) to Bybit interval
-        interval_map = {
-            (4, 1): "1",  # MINUTE: 1
-            (4, 3): "3",  # MINUTE: 3
-            (4, 5): "5",  # MINUTE: 5
-            (4, 15): "15",  # MINUTE: 15
-            (4, 30): "30",  # MINUTE: 30
-            (5, 1): "60",  # HOUR: 1
-            (5, 2): "120",  # HOUR: 2
-            (5, 4): "240",  # HOUR: 4
-            (5, 6): "360",  # HOUR: 6
-            (5, 12): "720",  # HOUR: 12
-            (6, 1): "D",  # DAY: 1
-            (7, 1): "W",  # WEEK: 1
-            (8, 1): "M",  # MONTH: 1
-        }
-
-        key = (bar_spec.aggregation, bar_spec.step)
-        interval = interval_map.get(key)
-
-        if interval is None:
-            self._log.warning(
-                f"Unsupported bar spec {bar_spec}, defaulting to 1 minute",
-            )
-            return "1"
-
-        return interval
+        return nautilus_pyo3.bar_spec_to_bybit_interval(
+            bar_spec.aggregation.value,
+            bar_spec.step,
+        )
 
     async def _subscribe_order_book_deltas(self, command: SubscribeOrderBook) -> None:
         if command.book_type != BookType.L2_MBP:
@@ -233,12 +225,13 @@ class BybitDataClient(LiveMarketDataClient):
             return
 
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-
         depth = command.depth if command.depth != 0 else 50
-        symbol = command.instrument_id.symbol.value
 
-        await ws_client.subscribe_orderbook(symbol, depth)
+        # Store depth for later unsubscribe
+        self._depths[pyo3_instrument_id] = depth
+
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_orderbook(pyo3_instrument_id, depth)
 
     async def _subscribe_order_book_snapshots(self, command: SubscribeOrderBook) -> None:
         # Bybit doesn't differentiate between snapshots and deltas at subscription level
@@ -247,46 +240,39 @@ class BybitDataClient(LiveMarketDataClient):
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.instrument_id.symbol.value
-
-        await ws_client.subscribe_ticker(symbol)
+        await ws_client.subscribe_ticker(pyo3_instrument_id)
 
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.instrument_id.symbol.value
-
-        await ws_client.subscribe_trades(symbol)
+        await ws_client.subscribe_trades(pyo3_instrument_id)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
             command.bar_type.instrument_id.value,
         )
-        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.bar_type.instrument_id.symbol.value
-
-        # Convert bar spec to Bybit kline interval
         interval = self._bar_spec_to_bybit_interval(command.bar_type.spec)
-        await ws_client.subscribe_klines(symbol, interval)
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_klines(pyo3_instrument_id, interval)
 
     async def _subscribe_funding_rates(self, command: SubscribeFundingRates) -> None:
         # Bybit doesn't have a separate funding rate subscription
         # Funding rate data comes through ticker subscriptions for perpetual instruments
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.instrument_id.symbol.value
-
-        # Subscribe to ticker which includes funding rate updates
-        await ws_client.subscribe_ticker(symbol)
+        await ws_client.subscribe_ticker(pyo3_instrument_id)
 
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+
+        # Get depth from subscription tracking (default to 1 if not found)
+        depth = self._depths.get(pyo3_instrument_id, 1)
+
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_orderbook(pyo3_instrument_id, depth)
 
-        depth = command.depth if command.depth != 0 else 50
-        symbol = command.instrument_id.symbol.value
-
-        await ws_client.unsubscribe_orderbook(symbol, depth)
+        # Remove from tracking
+        self._depths.pop(pyo3_instrument_id, None)
 
     async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
         await self._unsubscribe_order_book_deltas(command)
@@ -294,41 +280,29 @@ class BybitDataClient(LiveMarketDataClient):
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.instrument_id.symbol.value
-
-        await ws_client.unsubscribe_ticker(symbol)
+        await ws_client.unsubscribe_ticker(pyo3_instrument_id)
 
     async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.instrument_id.symbol.value
-
-        await ws_client.unsubscribe_trades(symbol)
+        await ws_client.unsubscribe_trades(pyo3_instrument_id)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
             command.bar_type.instrument_id.value,
         )
-        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.bar_type.instrument_id.symbol.value
-
-        # Convert bar spec to Bybit kline interval
         interval = self._bar_spec_to_bybit_interval(command.bar_type.spec)
-        await ws_client.unsubscribe_klines(symbol, interval)
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_klines(pyo3_instrument_id, interval)
 
     async def _unsubscribe_funding_rates(self, command: UnsubscribeFundingRates) -> None:
         # Bybit doesn't have a separate funding rate subscription
         # Unsubscribe from ticker which includes funding rate updates
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        symbol = command.instrument_id.symbol.value
-
-        await ws_client.unsubscribe_ticker(symbol)
+        await ws_client.unsubscribe_ticker(pyo3_instrument_id)
 
     def _handle_msg(self, raw: object) -> None:
-        """
-        Handle websocket message from Rust client.
-        """
         try:
             # Handle pycapsule data from Rust (market data)
             if nautilus_pyo3.is_pycapsule(raw):

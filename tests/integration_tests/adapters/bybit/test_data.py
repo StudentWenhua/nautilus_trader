@@ -22,6 +22,7 @@ from nautilus_trader.adapters.bybit.config import BybitDataClientConfig
 from nautilus_trader.adapters.bybit.constants import BYBIT_VENUE
 from nautilus_trader.adapters.bybit.data import BybitDataClient
 from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
@@ -123,7 +124,8 @@ async def test_subscribe_order_book_deltas(data_client_builder, monkeypatch):
         await client._subscribe_order_book_deltas(command)
 
         # Assert
-        ws_client.subscribe_orderbook.assert_awaited_once_with("BTCUSDT", 50)
+        expected_id = nautilus_pyo3.InstrumentId.from_str("BTCUSDT.BYBIT")
+        ws_client.subscribe_orderbook.assert_awaited_once_with(expected_id, 50)
     finally:
         await client._disconnect()
 
@@ -147,7 +149,8 @@ async def test_subscribe_quote_ticks(data_client_builder, monkeypatch):
         await client._subscribe_quote_ticks(command)
 
         # Assert
-        ws_client.subscribe_ticker.assert_awaited_once_with("BTCUSDT")
+        expected_id = nautilus_pyo3.InstrumentId.from_str("BTCUSDT.BYBIT")
+        ws_client.subscribe_ticker.assert_awaited_once_with(expected_id)
     finally:
         await client._disconnect()
 
@@ -171,7 +174,8 @@ async def test_subscribe_trade_ticks(data_client_builder, monkeypatch):
         await client._subscribe_trade_ticks(command)
 
         # Assert
-        ws_client.subscribe_trades.assert_awaited_once_with("BTCUSDT")
+        expected_id = nautilus_pyo3.InstrumentId.from_str("BTCUSDT.BYBIT")
+        ws_client.subscribe_trades.assert_awaited_once_with(expected_id)
     finally:
         await client._disconnect()
 
@@ -190,7 +194,7 @@ async def test_subscribe_bars(data_client_builder, monkeypatch):
         # Mock bar type with 1-minute interval
         bar_type = MagicMock()
         bar_type.instrument_id = InstrumentId(Symbol("BTCUSDT"), BYBIT_VENUE)
-        bar_type.spec.aggregation = 4  # MINUTE
+        bar_type.spec.aggregation = BarAggregation.MINUTE
         bar_type.spec.step = 1
 
         command = SimpleNamespace(bar_type=bar_type)
@@ -199,7 +203,8 @@ async def test_subscribe_bars(data_client_builder, monkeypatch):
         await client._subscribe_bars(command)
 
         # Assert
-        ws_client.subscribe_klines.assert_awaited_once_with("BTCUSDT", "1")
+        expected_id = nautilus_pyo3.InstrumentId.from_str("BTCUSDT.BYBIT")
+        ws_client.subscribe_klines.assert_awaited_once_with(expected_id, "1")
     finally:
         await client._disconnect()
 
@@ -223,7 +228,8 @@ async def test_subscribe_funding_rates(data_client_builder, monkeypatch):
         await client._subscribe_funding_rates(command)
 
         # Assert
-        ws_client.subscribe_ticker.assert_awaited_once_with("BTCUSDT")
+        expected_id = nautilus_pyo3.InstrumentId.from_str("BTCUSDT.BYBIT")
+        ws_client.subscribe_ticker.assert_awaited_once_with(expected_id)
     finally:
         await client._disconnect()
 
@@ -237,17 +243,26 @@ async def test_unsubscribe_order_book_deltas(data_client_builder, monkeypatch):
 
     await client._connect()
     try:
+        # First subscribe to track the depth
+        subscribe_command = SimpleNamespace(
+            book_type=BookType.L2_MBP,
+            depth=50,
+            instrument_id=InstrumentId(Symbol("BTCUSDT"), BYBIT_VENUE),
+        )
+        await client._subscribe_order_book_deltas(subscribe_command)
+
         ws_client.unsubscribe_orderbook.reset_mock()
 
-        command = SimpleNamespace(
-            depth=50,
+        # Now unsubscribe
+        unsubscribe_command = SimpleNamespace(
             instrument_id=InstrumentId(Symbol("BTCUSDT"), BYBIT_VENUE),
         )
 
         # Act
-        await client._unsubscribe_order_book_deltas(command)
+        await client._unsubscribe_order_book_deltas(unsubscribe_command)
 
         # Assert
-        ws_client.unsubscribe_orderbook.assert_awaited_once_with("BTCUSDT", 50)
+        expected_id = nautilus_pyo3.InstrumentId.from_str("BTCUSDT.BYBIT")
+        ws_client.unsubscribe_orderbook.assert_awaited_once_with(expected_id, 50)
     finally:
         await client._disconnect()
