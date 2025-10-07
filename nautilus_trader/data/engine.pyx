@@ -186,6 +186,8 @@ cdef class DataEngine(Component):
         self._query_group_responses: dict[UUID4, list] = {}
         self._query_group_main_request: dict[UUID4, RequestData] = {}
         self._query_group_request_ids: dict[UUID4, list[UUID4]] = {}
+        self._long_request_generator: dict[UUID4, object] = {}  # time_range_generator for each long request
+        self._sub_request_id_to_main_id: dict[UUID4, UUID4] = {}  # mapping from sub-request ID to main request ID
 
         self._topic_cache = TopicCache()
 
@@ -712,6 +714,8 @@ cdef class DataEngine(Component):
         self._snapshot_info.clear()
         self._query_group_main_request.clear()
         self._query_group_request_ids.clear()
+        self._long_request_generator.clear()
+        self._sub_request_id_to_main_id.clear()
         self._topic_cache.clear_cache()
 
         self._clock.cancel_timers()
@@ -1470,6 +1474,10 @@ cdef class DataEngine(Component):
         if self._is_backtest_client(client):
             used_client = None
 
+        if "time_range_generator" in request.params:
+            self._handle_long_date_range_request(client, request)
+            return
+
         # Capping dates to the now datetime
         cdef bint query_past_data = request.params.get("subscription_name") is None
         cdef datetime now = self._clock.utc_now()
@@ -1488,7 +1496,6 @@ cdef class DataEngine(Component):
         cdef list query_interval = [(start.value, end.value)]
         cdef list missing_intervals = query_interval
         cdef bint has_catalog_data = False
-        cdef object instrument_id
 
         if isinstance(request, RequestBars):
             identifier = request.bar_type
@@ -1537,6 +1544,7 @@ cdef class DataEngine(Component):
         if has_catalog_data and not skip_catalog_data:
             new_request = request.with_dates(start, end, now.value)
             self._query_group_request_ids[new_request.correlation_id].append(new_request.id)
+            self._sub_request_id_to_main_id[new_request.id] = new_request.correlation_id
             self._query_catalog(new_request)
 
         # Client requests
@@ -1544,7 +1552,120 @@ cdef class DataEngine(Component):
             for request_start, request_end in missing_intervals:
                 new_request = request.with_dates(time_object_to_dt(request_start), time_object_to_dt(request_end), now.value)
                 self._query_group_request_ids[new_request.correlation_id].append(new_request.id)
+                self._sub_request_id_to_main_id[new_request.id] = new_request.correlation_id
                 self._date_range_client_request(used_client, new_request)
+
+    cpdef void _handle_long_date_range_request(self, DataClient client, RequestData request):
+        time_range_generator = get_time_range_generator(
+            request.params.get("time_range_generator", "")
+        )(request)
+
+        self._long_request_generator[request.id] = time_range_generator
+        self._query_group_main_request[request.id] = request
+
+        self._update_long_request_data(request.id, is_first_call=True)
+
+    cpdef void _update_long_request_data(self, UUID4 main_request_id, bint data_received = False, bint is_first_call = False):
+        time_range_generator = self._long_request_generator.get(main_request_id)
+        if time_range_generator is None:
+            self._log.error(f"No time range generator found for request {main_request_id}")
+            return
+
+        cdef RequestData main_request = self._query_group_main_request.get(main_request_id)
+        if main_request is None:
+            self._log.error(f"No main request found for {main_request_id}")
+            return
+
+        # Get next time range from generator
+        cdef uint64_t request_start_ns
+        cdef uint64_t request_end_ns
+
+        try:
+            if is_first_call:
+                request_start_ns, request_end_ns = next(time_range_generator)
+            else:
+                request_start_ns, request_end_ns = time_range_generator.send(data_received)
+        except StopIteration:
+            # No more intervals, send final empty response
+            self._finalize_long_request(main_request_id)
+            return
+
+        if main_request.end is not None and request_start_ns > main_request.end.value:
+            self._finalize_long_request(main_request_id)
+            return
+
+        # Create a sub-request for this interval
+        # Remove time_range_generator from params to avoid infinite recursion
+        cdef dict params = main_request.params.copy()
+        params.pop("time_range_generator", None)
+
+        cdef datetime now = self._clock.utc_now()
+        cdef RequestData new_request = main_request.with_dates(
+            unix_nanos_to_dt(request_start_ns),
+            unix_nanos_to_dt(request_end_ns),
+            now.value,
+            self._handle_long_request_response
+        )
+        new_request.params = params
+
+        self._log.debug(f"Long request {main_request.data_type.type.__name__} data from {unix_nanos_to_dt(request_start_ns)} to {unix_nanos_to_dt(request_end_ns)}")
+
+        # Store mapping from sub-request ID to main request ID
+        self._sub_request_id_to_main_id[new_request.id] = main_request_id
+
+        # Send the sub-request through the message bus to properly register the callback
+        self._msgbus.request(endpoint="DataEngine.request", request=new_request)
+
+    cpdef void _handle_long_request_response(self, DataResponse response):
+        # The response correlation_id is the sub-request ID, look up the main request ID
+        cdef UUID4 sub_request_id = response.correlation_id
+        cdef UUID4 main_request_id = self._sub_request_id_to_main_id.get(sub_request_id)
+
+        if main_request_id is None:
+            self._log.error(f"No main request ID found for sub-request {sub_request_id}")
+            return
+
+        # Clean up the mapping for this sub-request
+        self._sub_request_id_to_main_id.pop(sub_request_id, None)
+
+        # Check if we got data
+        cdef int data_count = response.params.get("data_count", len(response.data))
+        cdef bint data_received = data_count > 0
+
+        # Process the next interval with feedback
+        self._update_long_request_data(main_request_id, data_received=data_received)
+
+    cpdef void _finalize_long_request(self, UUID4 main_request_id):
+        cdef RequestData main_request = self._query_group_main_request.get(main_request_id)
+        if main_request is None:
+            self._log.error(f"Cannot finalize long request: no main request found for {main_request_id}")
+            return
+
+        # Clean up the generator
+        time_range_generator = self._long_request_generator.pop(main_request_id, None)
+        if time_range_generator is not None:
+            try:
+                time_range_generator.close()
+            except (StopIteration, GeneratorExit):
+                pass
+
+        # Clean up the main request
+        self._query_group_main_request.pop(main_request_id, None)
+
+        # Send final empty response through message bus, this will handle the original callback
+        response = DataResponse(
+            client_id=main_request.client_id,
+            venue=main_request.venue,
+            data_type=main_request.data_type,
+            data=[],
+            correlation_id=main_request_id,
+            response_id=UUID4(),
+            start=main_request.start,
+            end=main_request.end,
+            ts_init=self._clock.timestamp_ns(),
+            params=main_request.params,
+        )
+        self._msgbus.response(response)
 
     cpdef void _date_range_client_request(self, DataClient client, RequestData request):
         if isinstance(request, RequestBars):
@@ -1973,19 +2094,24 @@ cdef class DataEngine(Component):
 
                 self._handle_instruments(grouped_response.data, update_catalog, force_update_catalog)
             elif grouped_response.params.get("bars_market_data_type"):
+                grouped_response.params["data_count"] = len(grouped_response.data)
                 self._handle_aggregated_bars(grouped_response)
                 grouped_response.data_type = DataType(Bar)
                 grouped_response.data = []
             elif grouped_response.data_type.type == QuoteTick:
+                grouped_response.params["data_count"] = len(grouped_response.data)
                 self._handle_quote_ticks(grouped_response.data)
                 grouped_response.data = []
             elif grouped_response.data_type.type == TradeTick:
+                grouped_response.params["data_count"] = len(grouped_response.data)
                 self._handle_trade_ticks(grouped_response.data)
                 grouped_response.data = []
             elif grouped_response.data_type.type == Bar:
+                grouped_response.params["data_count"] = len(grouped_response.data)
                 self._handle_bars(grouped_response.data)
                 grouped_response.data = []
             elif grouped_response.data_type.type == OrderBookDepth10:
+                grouped_response.params["data_count"] = len(grouped_response.data)
                 self._handle_order_book_depths(grouped_response.data)
                 grouped_response.data = []
             # Note: custom data will use the callback submitted by the user in actor.request_data
@@ -2006,11 +2132,11 @@ cdef class DataEngine(Component):
     cdef DataResponse _handle_query_group_aux(self, DataResponse response):
         correlation_id = response.correlation_id
 
-        # Look for main request id
-        for main_request_id in self._query_group_request_ids:
-            if correlation_id in self._query_group_request_ids[main_request_id]:
-                correlation_id = main_request_id
-                break
+        # Look for main request id using the mapping
+        main_request_id = self._sub_request_id_to_main_id.get(correlation_id)
+        if main_request_id is not None:
+            correlation_id = main_request_id
+            self._sub_request_id_to_main_id.pop(response.correlation_id, None)
 
         if correlation_id not in self._query_group_responses:
             self._log.error(f"_handle_query_group_aux: correlation_id {correlation_id} not found in _query_group_responses. Available keys: {list(self._query_group_responses.keys())}")
@@ -2114,14 +2240,15 @@ cdef class DataEngine(Component):
         if used_catalog is None and len(self._catalogs) > 0:
             used_catalog = list(self._catalogs.values())[0]
 
-        if used_catalog is not None:
-            if len(data) == 0 and data_cls and start and end:
-                # identifier can be None for custom data
-                used_catalog.extend_file_name(data_cls, identifier, start, end)
-            else:
-                used_catalog.write_data(data, start, end)
-        else:
+        if used_catalog is None:
             self._log.warning("No catalog available for appending data.")
+            return
+
+        if len(data) == 0 and data_cls and start and end:
+            # identifier can be None for custom data
+            used_catalog.extend_file_name(data_cls, identifier, start, end)
+        else:
+            used_catalog.write_data(data, start, end)
 
     cpdef tuple[datetime, object] _catalog_last_timestamp(
         self,
