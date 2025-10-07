@@ -37,11 +37,13 @@ use nautilus_model::{
 };
 use nautilus_network::{
     RECONNECTED,
+    retry::{RetryManager, create_websocket_retry_manager},
     websocket::{PingHandler, WebSocketClient, WebSocketConfig, channel_message_handler},
 };
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     common::{
@@ -76,6 +78,32 @@ const PING_MESSAGE: &str = r#"{"op":"ping"}"#;
 const PONG_MESSAGE: &str = r#"{"op":"pong"}"#;
 const WEBSOCKET_AUTH_WINDOW_MS: i64 = 5_000;
 
+/// Determines if a Bybit WebSocket error should trigger a retry.
+fn should_retry_bybit_error(error: &BybitWsError) -> bool {
+    match error {
+        BybitWsError::Transport(_) => true, // Network errors are retryable
+        BybitWsError::Send(_) => true,      // Send errors are retryable
+        BybitWsError::ClientError(msg) => {
+            // Retry on timeout and connection errors (case-insensitive)
+            let msg_lower = msg.to_lowercase();
+            msg_lower.contains("timeout")
+                || msg_lower.contains("timed out")
+                || msg_lower.contains("connection")
+                || msg_lower.contains("network")
+        }
+        BybitWsError::NotConnected => true, // Connection issues are retryable
+        BybitWsError::Authentication(_) | BybitWsError::Json(_) => {
+            // Don't retry authentication or parsing errors automatically
+            false
+        }
+    }
+}
+
+/// Creates a timeout error for Bybit operations.
+fn create_bybit_timeout_error(msg: String) -> BybitWsError {
+    BybitWsError::ClientError(msg)
+}
+
 /// Public/market data WebSocket client for Bybit.
 #[cfg_attr(feature = "python", pyo3::pyclass)]
 pub struct BybitWebSocketClient {
@@ -95,6 +123,8 @@ pub struct BybitWebSocketClient {
     instruments: Arc<DashMap<InstrumentId, InstrumentAny>>,
     account_id: Option<AccountId>,
     quote_cache: Arc<RwLock<cache::QuoteCache>>,
+    retry_manager: Arc<RetryManager<BybitWsError>>,
+    cancellation_token: CancellationToken,
 }
 
 impl fmt::Debug for BybitWebSocketClient {
@@ -129,6 +159,8 @@ impl Clone for BybitWebSocketClient {
             instruments: Arc::clone(&self.instruments),
             account_id: self.account_id,
             quote_cache: Arc::clone(&self.quote_cache),
+            retry_manager: Arc::clone(&self.retry_manager),
+            cancellation_token: self.cancellation_token.clone(),
         }
     }
 }
@@ -146,6 +178,10 @@ impl BybitWebSocketClient {
     }
 
     /// Creates a new Bybit public WebSocket client targeting the specified product/environment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the retry manager cannot be created.
     #[must_use]
     pub fn new_public_with(
         product_type: BybitProductType,
@@ -170,10 +206,18 @@ impl BybitWebSocketClient {
             instruments: Arc::new(DashMap::new()),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
+            retry_manager: Arc::new(
+                create_websocket_retry_manager().expect("Failed to create retry manager"),
+            ),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
     /// Creates a new Bybit private WebSocket client.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the retry manager cannot be created.
     #[must_use]
     pub fn new_private(
         environment: BybitEnvironment,
@@ -198,10 +242,18 @@ impl BybitWebSocketClient {
             instruments: Arc::new(DashMap::new()),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
+            retry_manager: Arc::new(
+                create_websocket_retry_manager().expect("Failed to create retry manager"),
+            ),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
     /// Creates a new Bybit trade WebSocket client for order operations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the retry manager cannot be created.
     #[must_use]
     pub fn new_trade(
         environment: BybitEnvironment,
@@ -226,6 +278,10 @@ impl BybitWebSocketClient {
             instruments: Arc::new(DashMap::new()),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
+            retry_manager: Arc::new(
+                create_websocket_retry_manager().expect("Failed to create retry manager"),
+            ),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -745,14 +801,28 @@ impl BybitWebSocketClient {
             ));
         }
 
-        let request = BybitWsRequest {
-            op: BybitWsOrderRequestOp::Create,
-            header: BybitWsHeader::now(),
-            args: vec![params],
-        };
+        self.retry_manager
+            .execute_with_retry_with_cancel(
+                "place_order",
+                || {
+                    let params = params.clone();
+                    async move {
+                        let request = BybitWsRequest {
+                            op: BybitWsOrderRequestOp::Create,
+                            header: BybitWsHeader::now(),
+                            args: vec![params],
+                        };
 
-        let payload = serde_json::to_string(&request).map_err(BybitWsError::from)?;
-        Self::send_text_inner(&self.inner, &payload).await
+                        let payload =
+                            serde_json::to_string(&request).map_err(BybitWsError::from)?;
+                        Self::send_text_inner(&self.inner, &payload).await
+                    }
+                },
+                should_retry_bybit_error,
+                create_bybit_timeout_error,
+                &self.cancellation_token,
+            )
+            .await
     }
 
     /// Amends an existing order via WebSocket.
@@ -771,14 +841,28 @@ impl BybitWebSocketClient {
             ));
         }
 
-        let request = BybitWsRequest {
-            op: BybitWsOrderRequestOp::Amend,
-            header: BybitWsHeader::now(),
-            args: vec![params],
-        };
+        self.retry_manager
+            .execute_with_retry_with_cancel(
+                "amend_order",
+                || {
+                    let params = params.clone();
+                    async move {
+                        let request = BybitWsRequest {
+                            op: BybitWsOrderRequestOp::Amend,
+                            header: BybitWsHeader::now(),
+                            args: vec![params],
+                        };
 
-        let payload = serde_json::to_string(&request).map_err(BybitWsError::from)?;
-        Self::send_text_inner(&self.inner, &payload).await
+                        let payload =
+                            serde_json::to_string(&request).map_err(BybitWsError::from)?;
+                        Self::send_text_inner(&self.inner, &payload).await
+                    }
+                },
+                should_retry_bybit_error,
+                create_bybit_timeout_error,
+                &self.cancellation_token,
+            )
+            .await
     }
 
     /// Cancels an order via WebSocket.
@@ -797,14 +881,28 @@ impl BybitWebSocketClient {
             ));
         }
 
-        let request = BybitWsRequest {
-            op: BybitWsOrderRequestOp::Cancel,
-            header: BybitWsHeader::now(),
-            args: vec![params],
-        };
+        self.retry_manager
+            .execute_with_retry_with_cancel(
+                "cancel_order",
+                || {
+                    let params = params.clone();
+                    async move {
+                        let request = BybitWsRequest {
+                            op: BybitWsOrderRequestOp::Cancel,
+                            header: BybitWsHeader::now(),
+                            args: vec![params],
+                        };
 
-        let payload = serde_json::to_string(&request).map_err(BybitWsError::from)?;
-        Self::send_text_inner(&self.inner, &payload).await
+                        let payload =
+                            serde_json::to_string(&request).map_err(BybitWsError::from)?;
+                        Self::send_text_inner(&self.inner, &payload).await
+                    }
+                },
+                should_retry_bybit_error,
+                create_bybit_timeout_error,
+                &self.cancellation_token,
+            )
+            .await
     }
 
     /// Batch creates multiple orders via WebSocket.

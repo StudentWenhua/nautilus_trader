@@ -232,6 +232,8 @@ class BitmexExecutionClient(LiveExecutionClient):
             self._log.error(f"Failed to update account state: {e}")
 
     async def _disconnect(self) -> None:
+        self._http_client.cancel_all_requests()
+
         if not self._ws_client.is_closed():
             try:
                 # Unsubscribe from authenticated channels before disconnecting

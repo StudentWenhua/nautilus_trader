@@ -1010,10 +1010,8 @@ async fn test_trade_subscription_flow() {
     client.connect().await.unwrap();
 
     // Subscribe to trades using the high-level method
-    client
-        .subscribe_trades("BTCUSDT".to_string())
-        .await
-        .unwrap();
+    let instrument_id = InstrumentId::from("BTCUSDT-LINEAR.BYBIT");
+    client.subscribe_trades(instrument_id).await.unwrap();
 
     // Wait for subscription
     wait_until_async(

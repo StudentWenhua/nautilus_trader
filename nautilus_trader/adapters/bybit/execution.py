@@ -219,6 +219,8 @@ class BybitExecutionClient(LiveExecutionClient):
             self._log.info("Connected to trade WebSocket", LogColor.BLUE)
 
     async def _disconnect(self) -> None:
+        self._http_client.cancel_all_requests()
+
         # Close private WebSocket
         if await self._ws_private_client.is_active():
             self._log.info("Disconnecting private websocket")
